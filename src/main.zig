@@ -3,14 +3,19 @@ const std = @import("std");
 const protocol = @import("protocol.zig");
 const Registry = @import("registry.zig");
 const Server = @import("http.zig");
+const updates = @import("updates.zig");
+const version = @import("version.zig");
 
 const usage =
     \\Usage: openreliant-directory [--bind ADDRESS:PORT] [--trust-proxy]
     \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
+    \\                             [--no-update-check]
+    \\       openreliant-directory --version
     \\
     \\The default listener is 127.0.0.1:8080. Put an HTTPS proxy in front of a public instance.
     \\With --trust-proxy, the loopback proxy must replace X-Forwarded-For with the original IP.
     \\Omit --allow-game and --allow-host to accept any game and any verified host key.
+    \\Use --no-update-check to skip checking for releases on GitHub at startup.
     \\
 ;
 
@@ -20,6 +25,10 @@ pub fn main(init: std.process.Init) !u8 {
         try std.Io.File.stdout().writeStreamingAll(init.io, usage);
         return 0;
     }
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--version")) {
+        try std.Io.File.stdout().writeStreamingAll(init.io, "openreliant-directory " ++ version.string ++ "\n");
+        return 0;
+    }
     const settings = Settings.parse(args[1..]) catch |err| {
         std.log.err("invalid directory settings: {t}", .{err});
         return 1;
@@ -27,6 +36,13 @@ pub fn main(init: std.process.Init) !u8 {
     const registry = try init.gpa.create(Registry);
     defer init.gpa.destroy(registry);
     registry.* = .{ .policy = settings.policy };
+    std.log.info("OpenReliant Directory {s}", .{version.string});
+    var update_check: std.Io.Group = .init;
+    defer update_check.cancel(init.io);
+    if (settings.check_updates) {
+        update_check.concurrent(init.io, updates.check, .{init.io}) catch |err|
+            std.log.debug("could not start the release check: {t}", .{err});
+    }
     var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .registry = registry };
     try server.serve(settings.bind);
     return 0;
@@ -35,6 +51,7 @@ pub fn main(init: std.process.Init) !u8 {
 const Settings = struct {
     bind: std.Io.net.IpAddress = .{ .ip4 = .loopback(8080) },
     trust_proxy: bool = false,
+    check_updates: bool = true,
     policy: Registry.Policy = .{},
 
     fn parse(args: []const [:0]const u8) !Settings {
@@ -42,6 +59,10 @@ const Settings = struct {
         var next: usize = 0;
         while (next < args.len) : (next += 1) {
             const argument = args[next];
+            if (std.mem.eql(u8, argument, "--no-update-check")) {
+                settings.check_updates = false;
+                continue;
+            }
             if (std.mem.eql(u8, argument, "--trust-proxy")) {
                 settings.trust_proxy = true;
                 continue;
@@ -67,4 +88,6 @@ const Settings = struct {
 test {
     std.testing.refAllDecls(protocol);
     std.testing.refAllDecls(Registry);
+    _ = updates;
+    _ = version;
 }

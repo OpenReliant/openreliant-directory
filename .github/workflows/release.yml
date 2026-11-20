@@ -52,8 +52,14 @@ jobs:
             cp "zig-out/$target/bin/openreliant-directory" "dist/$arch/"
             tar -C "dist/$arch" -czf "dist/openreliant-directory-$TAG-linux-$target.tar.gz" openreliant-directory
           done
+          reported=$(dist/amd64/openreliant-directory --version)
+          if [ "$reported" != "openreliant-directory ${TAG#v}" ]; then
+            printf 'Release tag %s does not match %s\n' "$TAG" "$reported" >&2
+            exit 1
+          fi
       - name: Publish the multi-architecture image
         run: |
+          cp /etc/ssl/certs/ca-certificates.crt dist/
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker buildx create --use --driver docker-container
           docker buildx build --platform linux/amd64,linux/arm64 --push \

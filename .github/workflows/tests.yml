@@ -18,7 +18,7 @@ jobs:
           version: 0.17.1
       - name: Check formatting and run tests
         run: |
-          zig fmt --check build.zig src
+          zig fmt --check build.zig build.zig.zon src
           zig build test --summary all
           zig build
           python3 scripts/check-directory.py zig-out/bin/openreliant-directory

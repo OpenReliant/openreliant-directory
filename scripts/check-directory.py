@@ -34,7 +34,7 @@ def service(binary):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
-    process = subprocess.Popen([binary, "--bind", f"127.0.0.1:{port}", "--trust-proxy"])
+    process = subprocess.Popen([binary, "--bind", f"127.0.0.1:{port}", "--trust-proxy", "--no-update-check"])
     try:
         deadline = time.monotonic() + 3
         while True:
@@ -82,6 +82,8 @@ def listings(port, game="org.openreliant.starlancer"):
 
 
 def main(binary):
+    version = subprocess.check_output([binary, "--version"], text=True).strip()
+    assert version.startswith("openreliant-directory "), version
     with tempfile.TemporaryDirectory() as directory:
         host = Host(Path(directory))
         first, second, third = (f"{n:032x}" for n in (1, 2, 3))

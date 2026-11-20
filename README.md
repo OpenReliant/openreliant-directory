@@ -1,8 +1,16 @@
 # OpenReliant Directory
 
-OpenReliant Directory is the design for a community-run multiplayer game directory. A player can find a public game, see whether it has room, and join it. A directory can also introduce peers for NAT traversal and offer an optional STUN endpoint or TURN relay. The Zig service implements the listings protocol. OpenReliant browser and host integration are tracked in [#957](https://github.com/OpenReliant/openreliant/issues/957).
+OpenReliant Directory is a community-run service for public multiplayer game listings. Game
+hosts can register, renew and withdraw signed listings. Browsers can look up a game's sessions
+and see each server's name, player count, address and gameplay protocol revision. The listings
+API supports any game that implements the directory protocol.
 
-The OpenReliant project can run a public instance. Groups, organisations, regions and other games can run their own. For example, a German community could list German-speaking games and reserve its relay bandwidth for community hosts. A game can advertise to both the project directory and the German directory. A player browsing both sees one game.
+A group, organisation or region can run its own directory. Hosts can register with several
+instances independently. For example, a German community can run a directory for German-speaking
+games. OpenReliant's host advertising and server browser, including merging results and marking
+incompatible servers, are tracked in [#957](https://github.com/OpenReliant/openreliant/issues/957).
+Rendezvous, STUN and TURN are planned. The capabilities endpoint reports the features available
+on each instance.
 
 ## Design
 
@@ -11,8 +19,7 @@ The OpenReliant project can run a public instance. Groups, organisations, region
 
 OpenReliant owns the game host, browser and gameplay connection. This repository owns the service, its protocol and its deployment. The directory design supports both a graphical host who plays and a dedicated headless host. Joining a reachable game by address works independently of the service.
 
-The game-side work is tracked in [public discovery and quick join](https://github.com/OpenReliant/openreliant/issues/957) and [NAT traversal](https://github.com/OpenReliant/openreliant/issues/363). The [2.0 engine roadmap](https://github.com/OpenReliant/openreliant/issues/950) explains why StarLancer is one game among many.
-
+See [NAT traversal](https://github.com/OpenReliant/openreliant/issues/363) for the game-side connection work and the [2.0 engine roadmap](https://github.com/OpenReliant/openreliant/issues/950) for support for other games.
 
 ## Run a directory
 
@@ -39,9 +46,16 @@ location / {
 Use `--bind` to change the listener and `--allow-game` or `--allow-host` if the instance
 lists one game or one host key. Listings are held in memory. Hosts re-register after a restart.
 
-Release Please publishes Linux x86_64 and AArch64 archives and a single multi-architecture
+The service logs its version at startup. Run `openreliant-directory --version` to print it.
+Development builds from tagged Git history include the commit and any working tree changes
+in the version string.
+On startup the service checks GitHub for a newer stable release in the background and logs a
+warning with the release link when one is available. The check has a five-second limit.
+Use `--no-update-check` to disable it, including for an offline instance.
+
+The release workflow publishes Linux x86_64 and AArch64 archives and a single multi-architecture
 image at `ghcr.io/openreliant/openreliant-directory`. On a Linux host with a local HTTPS proxy,
-run the image with a loopback backend.
+run the published image with a loopback backend.
 
 ```sh
 docker run --rm --network host ghcr.io/openreliant/openreliant-directory:latest \
