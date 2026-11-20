@@ -30,11 +30,11 @@ def request(port, path, body=None, headers=None, expected=200, source=PUBLISHER)
 
 
 @contextlib.contextmanager
-def service(binary):
+def service(binary, *options):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
-    process = subprocess.Popen([binary, "--bind", f"127.0.0.1:{port}", "--trust-proxy", "--no-update-check"])
+    process = subprocess.Popen([binary, "--bind", f"127.0.0.1:{port}", "--trust-proxy", "--no-update-check", *options])
     try:
         deadline = time.monotonic() + 3
         while True:
@@ -61,9 +61,9 @@ class Host:
         public = subprocess.check_output([OPENSSL, "pkey", "-in", self.key, "-pubout", "-outform", "DER"])
         self.public = public[-32:].hex()
 
-    def proof(self, port, session, operation, body):
+    def proof(self, port, session, operation, body, source=PUBLISHER):
         data = json.dumps({"key": self.public, "session": session, "operation": operation}).encode()
-        token = request(port, "/v1/challenge", data)["challenge"]
+        token = request(port, "/v1/challenge", data, source=source)["challenge"]
         payload = self.folder / "message"
         payload.write_bytes(f"OpenReliant Directory v1\n{operation}\n{token}\n{session}\n".encode() + body)
         signature = subprocess.check_output([OPENSSL, "pkeyutl", "-sign", "-rawin", "-inkey", self.key, "-in", payload])
@@ -72,9 +72,9 @@ class Host:
             "X-Directory-Challenge": token, "X-Directory-Signature": signature.hex(),
         }
 
-    def publish(self, port, session, operation, ad, expected=200):
+    def publish(self, port, session, operation, ad, expected=200, source=PUBLISHER):
         body = json.dumps(ad, separators=(",", ":")).encode() if ad is not None else b""
-        return request(port, f"/v1/{operation}", body, self.proof(port, session, operation, body), expected)
+        return request(port, f"/v1/{operation}", body, self.proof(port, session, operation, body, source), expected, source)
 
 
 def listings(port, game="org.openreliant.starlancer"):
@@ -128,6 +128,13 @@ def main(binary):
             host.publish(a, first, "withdraw", None, expected=204)
             assert not listings(a)
             request(a, "/v1/challenge", b"{}", expected=403, source="127.0.0.1")
+        with service(binary, "--allow-private-publishers") as private:
+            internal = "10.2.3.4"
+            host.publish(private, first, "register", ad, expected=403, source=internal)
+            published = {**ad, "address": "1.1.1.1"}
+            host.publish(private, first, "register", published, source=internal)
+            assert listings(private)[0]["address"] == "1.1.1.1:27020"
+            host.publish(private, first, "withdraw", None, expected=204, source=internal)
     print("Two directories kept independent leases, updates, games and withdrawals.")
 
 

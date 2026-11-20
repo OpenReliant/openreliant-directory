@@ -13,6 +13,7 @@ const Request = std.http.Server.Request;
 
 io: Io,
 trust_proxy: bool,
+allow_private_publishers: bool = false,
 registry: *Registry,
 max_connections: usize = default_connections,
 mutex: Io.Mutex = .init,
@@ -107,7 +108,7 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     const operation = std.meta.stringToEnum(protocol.Operation, action);
     if (operation == null and !issue_challenge) return error.Missing;
 
-    const public = protocol.publicAddress(source) orelse return error.Forbidden;
+    const public = protocol.publicAddress(source) orelse if (server.allow_private_publishers) source else return error.Forbidden;
     const length = request.head.content_length orelse return error.InvalidRequest;
     if (length > protocol.max_body) return error.BodyTooLarge;
     const proof = if (issue_challenge) null else try readProof(request);
@@ -149,6 +150,7 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     } else ad: {
         const ad = std.json.parseFromSliceLeaky(protocol.Advertisement, temporary.allocator(), body, .{}) catch return error.InvalidRequest;
         if (!ad.valid()) return error.InvalidRequest;
+        if (protocol.publicAddress(source) == null and ad.address == null) return error.Forbidden;
         break :ad ad;
     };
     {
