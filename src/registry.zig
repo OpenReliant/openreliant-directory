@@ -162,26 +162,29 @@ pub fn advertise(
     var first_free: ?*?Listing = null;
     var previous: ?*Listing = null;
     var source_count: usize = 0;
-    var key_count: usize = 0;
     for (&registry.listings) |*entry| {
         if (entry.*) |*listing| {
             if (listing.expires > now) {
-                if (listing.identity.eql(who)) {
+                if (std.mem.eql(u8, &who.key, &listing.identity.key)) {
                     previous = listing;
                     continue;
                 }
                 if (listing.source.eql(&source)) source_count += 1;
-                if (std.mem.eql(u8, &who.key, &listing.identity.key)) key_count += 1;
                 continue;
             }
         }
         if (first_free == null) first_free = entry;
     }
-    if (source_count >= 16 or key_count >= 4) return error.RateLimited;
+    if (source_count >= 16) return error.RateLimited;
 
     var address = if (ad.address) |text| protocol.publicAddress(net.IpAddress.parse(text, 0) catch return error.Forbidden) orelse return error.Forbidden else source;
     address.setPort(ad.port);
     if (previous) |listing| {
+        if (!listing.identity.eql(who)) {
+            if (operation == .renew) return error.Missing;
+            put(listing, who, source, address, ad, body, now);
+            return;
+        }
         if (!std.mem.eql(u8, listing.game_id[0..listing.game_len], ad.game.id)) return error.Conflict;
         if (ad.revision < listing.revision) return error.Stale;
         if (ad.revision == listing.revision) {

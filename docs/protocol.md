@@ -30,7 +30,7 @@ The following is the required behaviour. The listing operations are implemented 
 | Operation | Contract |
 |---|---|
 | Get capabilities | Return the supported directory protocol version and available directory, rendezvous, STUN and TURN capabilities. Public capability data contains no credentials. |
-| Register | Check the host's proof of possession and the instance's advertising policy. Accept a bounded advertisement and return a lease with its expiry and renewal interval. Repeating a registration for the same verified host and session produces one listing. |
+| Register | Check the host's proof of possession and the instance's advertising policy. Accept a bounded advertisement and return a lease with its expiry and renewal interval. A verified host has one listing per directory. Registering a new session with the same key replaces its previous listing. Renewals and withdrawals still require the current session. |
 | Update or renew | Only the authorised host can change its listing. A renewal extends the lease. An older update must not overwrite a newer revision. Retrying the same revision is safe. |
 | Withdraw | Remove the caller's listing from this directory. Retrying after removal is safe. Loss of the withdrawal is covered by lease expiry. |
 | Browse | Return live public listings for a game ID, with bounded pages. Include the source's lease freshness and routes. Exclude expired, private and locally moderated sessions. |

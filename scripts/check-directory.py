@@ -118,21 +118,27 @@ def main(binary):
                 assert listings(a)[0]["advertisement"]["description"] == "German-speaking games"
                 assert listings(b)[0]["advertisement"]["revision"] == 1
 
-                host.publish(a, second, "register", {**ad, "protocol": 29})
-                other = {**ad, "game": {"id": "org.example.second-game", "name": "Second Game"},
-                         "mode": {"id": "flag-run", "name": "Flag Run"}}
-                host.publish(a, third, "register", other)
-                by_session = {entry["session"]: entry["advertisement"] for entry in listings(a)}
-                assert set(by_session) == {first, second}
-                assert by_session[first]["protocol"] == 28 and by_session[second]["protocol"] == 29
-                assert by_session[first]["release"] == by_session[second]["release"]
-                assert listings(a, "org.example.second-game")[0]["advertisement"]["mode"]["id"] == "flag-run"
+                # A restart replaces the old session even when its revision starts at one.
+                host.publish(a, second, "register", {**ad, "protocol": 29, "description": "Restarted"})
+                replacement, = listings(a)
+                assert replacement["session"] == second
+                assert replacement["advertisement"]["description"] == "Restarted"
+                host.publish(a, first, "renew", updated, expected=404)
+                host.publish(a, first, "withdraw", None, expected=204)
+                assert listings(a)[0]["session"] == second
+                assert listings(b)[0]["session"] == first
+
+                with tempfile.TemporaryDirectory() as another_directory:
+                    another = Host(Path(another_directory))
+                    other = {**ad, "game": {"id": "org.example.second-game", "name": "Second Game"},
+                             "mode": {"id": "flag-run", "name": "Flag Run"}}
+                    another.publish(a, third, "register", other)
+                    assert listings(a, "org.example.second-game")[0]["advertisement"]["mode"]["id"] == "flag-run"
+                    another.publish(a, third, "withdraw", None, expected=204)
                 host.publish(a, second, "withdraw", None, expected=204)
-                assert len(listings(a)) == 1
+                assert not listings(a)
                 assert len(listings(b)) == 1
 
-            assert listings(a)[0]["advertisement"]["revision"] == 2
-            host.publish(a, first, "withdraw", None, expected=204)
             assert not listings(a)
             request(a, "/v1/challenge", b"{}", expected=403, source="127.0.0.1")
         with service(binary, "--allow-private-publishers") as private:
