@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/OpenReliant/openreliant-directory/compare/v0.2.0...v0.3.0) (2026-11-20)
+
+
+### Features
+
+* add directory version, STUN and optional TURN ([33e6600](https://github.com/OpenReliant/openreliant-directory/commit/33e6600222251e7a6d63a53efcae802660d8f3d1))
+* add optional STUN and authenticated TURN ([652ca29](https://github.com/OpenReliant/openreliant-directory/commit/652ca297cea50b1b6e7fa4c93e96c921a2188b50))
+
 ## [0.2.0](https://github.com/OpenReliant/openreliant-directory/compare/v0.1.0...v0.2.0) (2026-11-20)
 
 
