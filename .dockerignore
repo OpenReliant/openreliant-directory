@@ -2,3 +2,4 @@
 !dist/
 !dist/**/
 !dist/**/openreliant-directory
+!dist/ca-certificates.crt

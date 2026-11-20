@@ -21,7 +21,7 @@ Python 3 and OpenSSL are needed for the HTTP smoke test.
 Run these before opening a pull request.
 
 ```sh
-zig fmt --check build.zig src
+zig fmt --check build.zig build.zig.zon src
 zig build test --summary all
 zig build
 python3 scripts/check-directory.py zig-out/bin/openreliant-directory
@@ -37,9 +37,9 @@ Branch from `main`. Use a Conventional Commits title, for example
 Explain what changed, how you checked it and any remaining work. End with `Closes #N`
 for each completed issue. The maintainer squash-merges pull requests.
 
-Release Please opens a release pull request with the next version and changelog. Merging
-it publishes archive downloads for Linux x86_64 and AArch64 and a single multi-architecture
-image at `ghcr.io/openreliant/openreliant-directory`.
+Release Please opens a release pull request with the next version in `build.zig.zon` and
+the changelog. Merging it publishes archive downloads for Linux x86_64 and AArch64 and a
+single multi-architecture image at `ghcr.io/openreliant/openreliant-directory`.
 
 GitHub makes the container package private on its first publication. Set its visibility to
 Public when the image is ready for anonymous community pulls.
