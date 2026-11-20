@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0](https://github.com/OpenReliant/openreliant-directory/compare/v0.1.0...v0.2.0) (2026-11-20)
+
+
+### Features
+
+* accept private publishers behind a trusted proxy ([5ff893b](https://github.com/OpenReliant/openreliant-directory/commit/5ff893b00c4b11db408e73324d7a4ffe11064480))
+* accept private publishers behind a trusted proxy ([0961d15](https://github.com/OpenReliant/openreliant-directory/commit/0961d1577fba497a8f2354423a11f7c654900047))
+* accept signed public game endpoints ([6ae69aa](https://github.com/OpenReliant/openreliant-directory/commit/6ae69aa394fb6d74201ecd12dc016e9719d3d9a4))
+* support advertised game endpoints and harden directory limits ([02a1a56](https://github.com/OpenReliant/openreliant-directory/commit/02a1a56ed4046ed4cadbe498bdd265e8cd5b641a))
+
+
+### Bug Fixes
+
+* bound directory requests by IPv6 subnet ([0655ffc](https://github.com/OpenReliant/openreliant-directory/commit/0655ffcf906b9d7546c4afa5afaf7e238910e135))
+
 ## 0.1.0 (2026-11-20)
 
 
