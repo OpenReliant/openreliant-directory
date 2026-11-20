@@ -9,8 +9,8 @@ A group, organisation or region can run its own directory. Hosts can register wi
 instances independently. For example, a German community can run a directory for German-speaking
 games. OpenReliant's host advertising and server browser, including merging results and marking
 incompatible servers, are tracked in [#957](https://github.com/OpenReliant/openreliant/issues/957).
-Rendezvous, STUN and TURN are planned. The capabilities endpoint reports the features available
-on each instance.
+Rendezvous is planned. An operator can add STUN and an authorised TURN relay using coturn.
+The capabilities endpoint reports which features the operator configured.
 
 ## Design
 
@@ -59,6 +59,34 @@ in the version string.
 On startup the service checks GitHub for a newer stable release in the background and logs a
 warning with the release link when one is available. The check has a five-second limit.
 Use `--no-update-check` to disable it, including for an offline instance.
+
+## Optional STUN and TURN
+
+On Linux, the coturn deployment uses host networking. Open UDP port 3478 in the firewall.
+Start the STUN-only service with `docker compose -f deploy/compose.yml --profile stun up -d`.
+Set `--stun stun:directory.example:3478` on the directory to advertise that service.
+
+TURN is disabled by default. To enable it, generate a secret and a coturn configuration:
+
+```sh
+umask 077
+openssl rand -hex 32 > deploy/turn.secret
+cp deploy/turnserver.conf.example deploy/turnserver.conf
+printf 'static-auth-secret=%s\n' "$(cat deploy/turn.secret)" >> deploy/turnserver.conf
+docker compose -f deploy/compose.yml --profile turn up -d
+```
+
+Stop the STUN-only profile first: TURN also answers STUN requests on the same port. Open
+UDP ports 49160-49223 for relay allocations. Adjust the example's quotas and bandwidth caps
+to the operator's budget. If the server is behind NAT, configure coturn's `external-ip` and
+forward the same UDP ports. The example denies relaying to private and link-local networks.
+
+Start the directory behind HTTPS with `--stun stun:directory.example:3478`,
+`--turn turn:directory.example:3478`, `--turn-secret-file deploy/turn.secret` and one or
+more `--turn-host` options containing authorised hosts' 64-digit Ed25519 public keys. Keep
+the secret and generated configuration private. TURN credentials last ten minutes and are
+only issued to a host that proves it owns an allowed key. Never expose them in listings.
+The game still needs rendezvous integration to obtain and distribute these credentials.
 
 The release workflow publishes Linux x86_64 and AArch64 archives and a single multi-architecture
 image at `ghcr.io/openreliant/openreliant-directory`. On a Linux host with a local HTTPS proxy,

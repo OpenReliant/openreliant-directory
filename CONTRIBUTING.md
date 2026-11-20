@@ -25,10 +25,12 @@ zig fmt --check build.zig build.zig.zon src
 zig build test --summary all
 zig build
 python3 scripts/check-directory.py zig-out/bin/openreliant-directory
+python3 scripts/check-relay.py zig-out/bin/openreliant-directory
 ```
 
 CI also builds the Linux x86_64 and AArch64 releases. Run the service on loopback while
-developing. The HTTP test runs two independent instances locally.
+developing. The HTTP test runs independent instances locally. The relay test uses Docker to
+run coturn on an isolated network and checks a STUN request and an authenticated TURN exchange.
 
 ## Pull requests and releases
 

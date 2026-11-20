@@ -3,6 +3,7 @@ const std = @import("std");
 const Io = std.Io;
 const net = Io.net;
 const protocol = @import("protocol.zig");
+const version = @import("version.zig");
 const Registry = @import("registry.zig");
 const Server = @This();
 const log = std.log.scoped(.directory);
@@ -14,6 +15,10 @@ const Request = std.http.Server.Request;
 io: Io,
 trust_proxy: bool,
 allow_private_publishers: bool = false,
+stun: ?[]const u8 = null,
+turn: ?[]const u8 = null,
+turn_hosts: []const protocol.Key = &.{},
+turn_secret: ?[]const u8 = null,
 registry: *Registry,
 max_connections: usize = default_connections,
 mutex: Io.Mutex = .init,
@@ -89,7 +94,19 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     if (request.head.method == .GET) {
         if ((request.head.content_length orelse 0) != 0) return error.InvalidRequest;
         if (std.mem.eql(u8, path, "/v1/capabilities") and query.len == 0) {
-            reply(request, .ok, "{\"version\":1,\"listings\":true,\"rendezvous\":false,\"stun\":false,\"turn\":false}");
+            var buffer: [1024]u8 = undefined;
+            var result: Io.Writer = .fixed(&buffer);
+            try std.json.Stringify.value(.{
+                .version = 1,
+                .service_version = version.string,
+                .listings = true,
+                .rendezvous = false,
+                .stun = server.stun != null,
+                .turn = server.turn != null,
+                .stun_endpoint = server.stun,
+                .turn_endpoint = server.turn,
+            }, .{}, &result);
+            reply(request, .ok, result.buffered());
             return;
         }
         if (std.mem.eql(u8, path, "/v1/listings")) {
@@ -144,6 +161,10 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     }
 
     const op = operation.?;
+    if (op == .credentials) {
+        try server.credentials(request, proof.?, public, body, received_at);
+        return;
+    }
     const advertisement = if (op == .withdraw) empty: {
         if (body.len != 0) return error.InvalidRequest;
         break :empty null;
@@ -168,6 +189,31 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     var buffer: [128]u8 = undefined;
     var result: Io.Writer = .fixed(&buffer);
     try std.json.Stringify.value(.{ .expires_in_seconds = Registry.lease_seconds, .renew_after_seconds = Registry.renewal_seconds }, .{}, &result);
+    reply(request, .ok, result.buffered());
+}
+
+fn credentials(server: *Server, request: *Request, proof: protocol.Proof, source: net.IpAddress, body: []const u8, now: i64) !void {
+    if (body.len != 0) return error.InvalidRequest;
+    const secret = server.turn_secret orelse return error.Forbidden;
+    const key = proof.identity.key;
+    for (server.turn_hosts) |allowed| {
+        if (std.mem.eql(u8, &allowed, &key)) break;
+    } else return error.Forbidden;
+    {
+        try server.mutex.lock(server.io);
+        defer server.mutex.unlock(server.io);
+        try server.registry.authorise(proof, source, .credentials, body, now);
+    }
+    const expires = Io.Clock.real.now(server.io).toSeconds() + 600;
+    var username_buffer: [96]u8 = undefined;
+    const username = try std.fmt.bufPrint(&username_buffer, "{d}:{s}", .{ expires, std.fmt.bytesToHex(key, .lower) });
+    var mac: [std.crypto.auth.hmac.HmacSha1.mac_length]u8 = undefined;
+    std.crypto.auth.hmac.HmacSha1.create(&mac, username, secret);
+    var password_buffer: [std.base64.standard.Encoder.calcSize(mac.len)]u8 = undefined;
+    const password = std.base64.standard.Encoder.encode(&password_buffer, &mac);
+    var buffer: [512]u8 = undefined;
+    var result: Io.Writer = .fixed(&buffer);
+    try std.json.Stringify.value(.{ .username = username, .password = password, .expires_at = expires }, .{}, &result);
     reply(request, .ok, result.buffered());
 }
 

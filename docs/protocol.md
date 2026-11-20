@@ -93,12 +93,26 @@ A client can discover capabilities or browse without an account.
 
 | Method and path | Request | Success |
 |---|---|---|
-| `GET /v1/capabilities` | Empty | JSON with `version` and booleans `listings`, `rendezvous`, `stun`, `turn` |
+| `GET /v1/capabilities` | Empty | JSON with `version`, `service_version`, capability booleans, and nullable `stun_endpoint` and `turn_endpoint` |
 | `GET /v1/listings?game=ID` | Add `&cursor=N` from the previous page if present | JSON with `listings` and a nullable `next` cursor |
 | `POST /v1/challenge` | JSON with `key`, `session` and `operation` | JSON with `challenge` and `expires_in_seconds` |
 | `POST /v1/register` | Signed advertisement | JSON with `expires_in_seconds` and `renew_after_seconds` |
 | `POST /v1/renew` | Signed advertisement for a live lease | Same fields as register |
 | `POST /v1/withdraw` | Signed empty body | 204 |
+| `POST /v1/credentials` | Signed empty body from an authorised TURN host | JSON with `username`, `password` and `expires_at` |
+
+`version` is the directory protocol version. `service_version` is the service's semantic version,
+the same value printed by `--version`, including any build metadata. Clients can compare it with
+their supported service version range. Ignore build metadata for semantic version precedence.
+Older services do not include `service_version`; clients must handle the missing field explicitly.
+STUN and TURN endpoint strings are public configuration, not credentials. Only advertise an
+endpoint when its service is actually running. An authorised host obtains a challenge for the
+`credentials` operation and signs an empty request as for a listing. The directory returns a
+short-lived coturn REST credential over HTTPS, with an expiry in Unix seconds. The host must
+deliver it privately to the joining player. A public listing does not grant relay access. The
+existing per-source request limits and single-use challenges apply. The directory can authorise
+up to 64 host keys. The client and rendezvous integration for distributing these credentials
+are not implemented yet.
 
 Send POST requests with an exact `Content-Length`. The service accepts up to 4 KiB of body
 and 8 KiB of headers. All keys, session IDs, challenges and signatures use lowercase hex
@@ -165,4 +179,5 @@ refresh. Concurrent updates can change later pages. Errors use 400 for invalid i
 for a missing or invalid proof, 403 for policy, 404 for a missing lease or route, 405 for
 method, 409 for stale or conflicting revisions, 413 for a large body, 429 for quota and
 503 for full service state. Request a fresh challenge when retrying a signed operation.
-The service does not use the optional rendezvous or relay capabilities in this batch.
+The service can advertise an operator-configured STUN or TURN endpoint and issue credentials
+to authorised TURN hosts. Rendezvous and game-side credential distribution are not implemented.
