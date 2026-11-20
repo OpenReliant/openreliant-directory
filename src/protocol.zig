@@ -49,6 +49,7 @@ pub const Advertisement = struct {
     release: []const u8,
     content: []const u8 = "",
     port: u16,
+    address: ?[]const u8 = null,
 
     pub fn valid(ad: Advertisement) bool {
         return labelValid(ad.game) and ad.revision != 0 and textValid(ad.name, 96, false) and
@@ -56,9 +57,15 @@ pub const Advertisement = struct {
             (ad.mode == null or labelValid(ad.mode.?)) and
             (ad.scenario == null or labelValid(ad.scenario.?)) and ad.capacity != 0 and
             ad.players <= ad.capacity and ad.protocol != 0 and ad.port != 0 and
-            textValid(ad.release, 64, false) and textValid(ad.content, 256, true);
+            textValid(ad.release, 64, false) and textValid(ad.content, 256, true) and
+            (ad.address == null or advertisedAddress(ad.address.?) != null);
     }
 };
+
+fn advertisedAddress(text: []const u8) ?net.IpAddress {
+    const address = net.IpAddress.parse(text, 0) catch return null;
+    return publicAddress(address);
+}
 
 fn labelValid(label: Label) bool {
     return identifier(label.id) and textValid(label.name, 96, false);

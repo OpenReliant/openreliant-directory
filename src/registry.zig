@@ -37,6 +37,7 @@ const Pending = struct {
 const Listing = struct {
     identity: Identity,
     address: net.IpAddress,
+    source: net.IpAddress,
     revision: u64,
     expires: i64,
     game_id: [protocol.max_game_id]u8 = undefined,
@@ -85,11 +86,13 @@ pub const Error = error{ Busy, RateLimited, Unauthorised, Forbidden, Missing, St
 
 /// At most 120 requests per source per minute. A full rate table remains bounded.
 pub fn admit(registry: *Registry, address: net.IpAddress, now: i64) Error!void {
+    var network = address;
+    if (network == .ip6) @memset(network.ip6.bytes[8..], 0);
     var free: ?*?Rate = null;
     for (&registry.rates) |*entry| {
         if (entry.*) |*rate| {
             if (rate.until > now) {
-                if (!rate.address.eql(&address)) continue;
+                if (!rate.address.eql(&network)) continue;
                 if (rate.requests >= 120) return error.RateLimited;
                 rate.requests += 1;
                 return;
@@ -98,7 +101,20 @@ pub fn admit(registry: *Registry, address: net.IpAddress, now: i64) Error!void {
         if (free == null) free = entry;
     }
     const slot = free orelse return error.Busy;
-    slot.* = .{ .address = address, .until = now + 60, .requests = 1 };
+    slot.* = .{ .address = network, .until = now + 60, .requests = 1 };
+}
+
+test "IPv6 addresses in one subnet share the request allowance" {
+    const registry = try std.testing.allocator.create(Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.* = .{};
+    for (0..120) |index| {
+        var address = try net.IpAddress.parse("2606:4700:abcd:1234::", 0);
+        address.ip6.bytes[15] = @intCast(index);
+        try registry.admit(address, 0);
+    }
+    try std.testing.expectError(error.RateLimited, registry.admit(try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), 0));
+    try registry.admit(try net.IpAddress.parse("2606:4700:abcd:1235::1", 0), 0);
 }
 
 pub fn challenge(registry: *Registry, who: Identity, source: net.IpAddress, operation: Operation, token: Token, now: i64) Error!void {
@@ -154,9 +170,7 @@ pub fn advertise(
                     previous = listing;
                     continue;
                 }
-                var address = listing.address;
-                address.setPort(0);
-                if (address.eql(&source)) source_count += 1;
+                if (listing.source.eql(&source)) source_count += 1;
                 if (std.mem.eql(u8, &who.key, &listing.identity.key)) key_count += 1;
                 continue;
             }
@@ -165,26 +179,26 @@ pub fn advertise(
     }
     if (source_count >= 16 or key_count >= 4) return error.RateLimited;
 
-    var address = source;
+    var address = if (ad.address) |text| protocol.publicAddress(net.IpAddress.parse(text, 0) catch return error.Forbidden) orelse return error.Forbidden else source;
     address.setPort(ad.port);
     if (previous) |listing| {
         if (!std.mem.eql(u8, listing.game_id[0..listing.game_len], ad.game.id)) return error.Conflict;
         if (ad.revision < listing.revision) return error.Stale;
         if (ad.revision == listing.revision) {
-            if (!address.eql(&listing.address) or !std.mem.eql(u8, body, listing.payload())) return error.Conflict;
+            if (!source.eql(&listing.source) or !address.eql(&listing.address) or !std.mem.eql(u8, body, listing.payload())) return error.Conflict;
             listing.expires = now + lease_seconds;
-        } else put(listing, who, address, ad, body, now);
+        } else put(listing, who, source, address, ad, body, now);
         return;
     }
 
     if (operation == .renew) return error.Missing;
     const slot = first_free orelse return error.Busy;
-    slot.* = .{ .identity = who, .address = address, .revision = ad.revision, .expires = now + lease_seconds };
-    put(&slot.*.?, who, address, ad, body, now);
+    slot.* = .{ .identity = who, .address = address, .source = source, .revision = ad.revision, .expires = now + lease_seconds };
+    put(&slot.*.?, who, source, address, ad, body, now);
 }
 
-fn put(listing: *Listing, who: Identity, address: net.IpAddress, ad: protocol.Advertisement, body: []const u8, now: i64) void {
-    listing.* = .{ .identity = who, .address = address, .revision = ad.revision, .expires = now + lease_seconds };
+fn put(listing: *Listing, who: Identity, source: net.IpAddress, address: net.IpAddress, ad: protocol.Advertisement, body: []const u8, now: i64) void {
+    listing.* = .{ .identity = who, .address = address, .source = source, .revision = ad.revision, .expires = now + lease_seconds };
     @memcpy(listing.game_id[0..ad.game.id.len], ad.game.id);
     listing.game_len = ad.game.id.len;
     @memcpy(listing.body[0..body.len], body);
@@ -267,4 +281,37 @@ test "a proof is bound to its directory challenge and operation" {
     try std.testing.expectError(error.Unauthorised, registry.authorise(proof, source, .renew, body, 2));
     try registry.authorise(proof, source, .register, body, 2);
     try std.testing.expectError(error.Unauthorised, registry.authorise(proof, source, .register, body, 2));
+}
+
+test "an advertised address keeps publisher quotas tied to its observed source" {
+    const registry = try std.testing.allocator.create(Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.* = .{};
+    const source = try net.IpAddress.parse("8.8.8.8", 0);
+    const ad: protocol.Advertisement = .{
+        .game = .{ .id = "org.example.game", .name = "Game" },
+        .revision = 1,
+        .name = "Server",
+        .hosting = .dedicated,
+        .players = 0,
+        .capacity = 8,
+        .accepting = true,
+        .protocol = 1,
+        .release = "1.0.0",
+        .port = 27020,
+        .address = "1.1.1.1",
+    };
+    for (0..16) |index| {
+        const who: Identity = .{ .key = @splat(@intCast(index)), .session = @splat(1) };
+        try registry.advertise(.register, who, source, ad, "{}", 0);
+    }
+    const extra: Identity = .{ .key = @splat(16), .session = @splat(1) };
+    try std.testing.expectError(error.RateLimited, registry.advertise(.register, extra, source, ad, "{}", 0));
+    var buffer: [8192]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buffer);
+    try registry.browse(ad.game.id, 0, 1, &out);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "1.1.1.1:27020") != null);
+    var private = ad;
+    private.address = "127.0.0.1";
+    try std.testing.expect(!private.valid());
 }

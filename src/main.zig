@@ -10,6 +10,7 @@ const usage =
     \\Usage: openreliant-directory [--bind ADDRESS:PORT] [--trust-proxy]
     \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
     \\                             [--no-update-check]
+    \\                             [--max-connections COUNT]
     \\       openreliant-directory --version
     \\
     \\The default listener is 127.0.0.1:8080. Put an HTTPS proxy in front of a public instance.
@@ -43,7 +44,7 @@ pub fn main(init: std.process.Init) !u8 {
         update_check.concurrent(init.io, updates.check, .{init.io}) catch |err|
             std.log.debug("could not start the release check: {t}", .{err});
     }
-    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .registry = registry };
+    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .registry = registry, .max_connections = settings.max_connections };
     try server.serve(settings.bind);
     return 0;
 }
@@ -52,6 +53,7 @@ const Settings = struct {
     bind: std.Io.net.IpAddress = .{ .ip4 = .loopback(8080) },
     trust_proxy: bool = false,
     check_updates: bool = true,
+    max_connections: usize = Server.default_connections,
     policy: Registry.Policy = .{},
 
     fn parse(args: []const [:0]const u8) !Settings {
@@ -70,7 +72,10 @@ const Settings = struct {
             next += 1;
             if (next == args.len) return error.MissingValue;
             const value = args[next];
-            if (std.mem.eql(u8, argument, "--bind")) {
+            if (std.mem.eql(u8, argument, "--max-connections")) {
+                settings.max_connections = std.fmt.parseInt(usize, value, 10) catch return error.InvalidConnectionLimit;
+                if (settings.max_connections == 0 or settings.max_connections > 1024) return error.InvalidConnectionLimit;
+            } else if (std.mem.eql(u8, argument, "--bind")) {
                 settings.bind = try .parseLiteral(value);
                 if (settings.bind.getPort() == 0) return error.InvalidPort;
             } else if (std.mem.eql(u8, argument, "--allow-game")) {
