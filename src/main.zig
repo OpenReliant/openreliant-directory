@@ -1,0 +1,70 @@
+//! Community-run game listings.
+const std = @import("std");
+const protocol = @import("protocol.zig");
+const Registry = @import("registry.zig");
+const Server = @import("http.zig");
+
+const usage =
+    \\Usage: openreliant-directory [--bind ADDRESS:PORT] [--trust-proxy]
+    \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
+    \\
+    \\The default listener is 127.0.0.1:8080. Put an HTTPS proxy in front of a public instance.
+    \\With --trust-proxy, the loopback proxy must replace X-Forwarded-For with the original IP.
+    \\Omit --allow-game and --allow-host to accept any game and any verified host key.
+    \\
+;
+
+pub fn main(init: std.process.Init) !u8 {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
+        try std.Io.File.stdout().writeStreamingAll(init.io, usage);
+        return 0;
+    }
+    const settings = Settings.parse(args[1..]) catch |err| {
+        std.log.err("invalid directory settings: {t}", .{err});
+        return 1;
+    };
+    const registry = try init.gpa.create(Registry);
+    defer init.gpa.destroy(registry);
+    registry.* = .{ .policy = settings.policy };
+    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .registry = registry };
+    try server.serve(settings.bind);
+    return 0;
+}
+
+const Settings = struct {
+    bind: std.Io.net.IpAddress = .{ .ip4 = .loopback(8080) },
+    trust_proxy: bool = false,
+    policy: Registry.Policy = .{},
+
+    fn parse(args: []const [:0]const u8) !Settings {
+        var settings: Settings = .{};
+        var next: usize = 0;
+        while (next < args.len) : (next += 1) {
+            const argument = args[next];
+            if (std.mem.eql(u8, argument, "--trust-proxy")) {
+                settings.trust_proxy = true;
+                continue;
+            }
+            next += 1;
+            if (next == args.len) return error.MissingValue;
+            const value = args[next];
+            if (std.mem.eql(u8, argument, "--bind")) {
+                settings.bind = try .parseLiteral(value);
+                if (settings.bind.getPort() == 0) return error.InvalidPort;
+            } else if (std.mem.eql(u8, argument, "--allow-game")) {
+                if (!protocol.identifier(value)) return error.InvalidGameId;
+                settings.policy.game = value;
+            } else if (std.mem.eql(u8, argument, "--allow-host")) {
+                settings.policy.host = try protocol.decodeHex(protocol.public_key_size, value);
+            } else return error.UnknownOption;
+        }
+        if (settings.trust_proxy and !Server.loopback(settings.bind)) return error.ProxyNeedsLoopback;
+        return settings;
+    }
+};
+
+test {
+    std.testing.refAllDecls(protocol);
+    std.testing.refAllDecls(Registry);
+}
