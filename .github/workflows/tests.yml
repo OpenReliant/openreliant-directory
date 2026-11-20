@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      - name: Check formatting and run tests
+        run: |
+          zig fmt --check build.zig src
+          zig build test --summary all
+          zig build
+          python3 scripts/check-directory.py zig-out/bin/openreliant-directory
+      - name: Build Linux release targets
+        run: |
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix zig-out/linux-x86_64
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe --prefix zig-out/linux-aarch64
