@@ -46,9 +46,10 @@ A suggested starting point is renewal every 30 seconds and expiry after 90 secon
 3. Show the freshest applicable metadata revision. Keep routes associated with the live source that supplied them. If two sources disagree at the same revision, retain one complete record under a deterministic configured-source order. Recheck the actual game at join time.
 4. Expire each source independently. Remove the row once it has no live sources. Never let cached directory data override a host's refusal at join time.
 5. Keep games with a different gameplay protocol revision visible. Grey out their rows,
-   disable Join and exclude them from quick join. Compare the advertised `protocol` with the
-   client's gameplay protocol revision. Different releases can be compatible when they share
-   that revision and pass the game's content checks.
+   disable Join and exclude them from quick join. Show `incompatible server version: x (have y)`
+   when the pointer rests on a greyed-out row. Replace `x` with the advertised `protocol` and
+   `y` with the client's gameplay protocol revision. Different releases can be compatible
+   when they share that revision and pass the game's content checks.
 6. When joining from a row, verify that the peer matches the advertised identity and intended
    session. A stale record must not silently connect the player to a different game that reused
    the address.
