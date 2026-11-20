@@ -22,6 +22,7 @@ jobs:
           zig build test --summary all
           zig build
           python3 scripts/check-directory.py zig-out/bin/openreliant-directory
+          python3 scripts/check-relay.py zig-out/bin/openreliant-directory
       - name: Build Linux release targets
         run: |
           zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix zig-out/linux-x86_64

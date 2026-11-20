@@ -1,0 +1,16 @@
+# Run exactly one profile. The relay uses the host network so UDP ports keep their numbers.
+services:
+  stun:
+    profiles: [stun]
+    image: coturn/coturn:4.19
+    network_mode: host
+    restart: unless-stopped
+    command: ["-n", "--stun-only", "--no-tls", "--no-tcp", "--log-file=stdout", "--relay-threads=1"]
+  turn:
+    profiles: [turn]
+    image: coturn/coturn:4.19
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]

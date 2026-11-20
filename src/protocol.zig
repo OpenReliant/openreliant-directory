@@ -11,7 +11,7 @@ pub const signature_size = Ed25519.Signature.encoded_length;
 pub const Session = [16]u8;
 pub const Token = [32]u8;
 pub const Key = [public_key_size]u8;
-pub const Operation = enum { register, renew, withdraw };
+pub const Operation = enum { register, renew, withdraw, credentials };
 
 pub const Identity = struct {
     key: Key,

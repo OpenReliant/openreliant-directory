@@ -1,5 +1,8 @@
 """Run two directory instances locally with independent leases."""
 import contextlib
+import base64
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -31,6 +34,7 @@ def request(port, path, body=None, headers=None, expected=200, source=PUBLISHER)
 
 @contextlib.contextmanager
 def service(binary, *options):
+    version = subprocess.check_output([binary, "--version"], text=True).strip().removeprefix("openreliant-directory ")
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -40,9 +44,12 @@ def service(binary, *options):
         while True:
             try:
                 capabilities = request(port, "/v1/capabilities")
-                assert capabilities == {
-                    "version": 1, "listings": True, "rendezvous": False, "stun": False, "turn": False,
-                }
+                assert capabilities["version"] == 1 and capabilities["service_version"] == version
+                assert capabilities["listings"] and not capabilities["rendezvous"]
+                for name in ("stun", "turn"):
+                    endpoint = options[options.index("--" + name) + 1] if "--" + name in options else None
+                    assert capabilities[name] == (endpoint is not None)
+                    assert capabilities[name + "_endpoint"] == endpoint
                 break
             except ConnectionRefusedError:
                 assert process.poll() is None and time.monotonic() < deadline
@@ -135,6 +142,24 @@ def main(binary):
             host.publish(private, first, "register", published, source=internal)
             assert listings(private)[0]["address"] == "1.1.1.1:27020"
             host.publish(private, first, "withdraw", None, expected=204, source=internal)
+        secret = b"test-secret-only-0123456789-abcdef"
+        secret_file = Path(directory) / "turn-secret"
+        secret_file.write_bytes(secret)
+        with service(binary, "--stun", "stun:relay.example:3478", "--turn", "turn:relay.example:3478",
+                     "--turn-host", host.public, "--turn-secret-file", str(secret_file)) as relay:
+            proof = host.proof(relay, first, "credentials", b"")
+            invalid = {**proof, "X-Directory-Signature": "00" * 64}
+            request(relay, "/v1/credentials", b"", invalid, expected=401)
+            credentials = request(relay, "/v1/credentials", b"", proof)
+            username = credentials["username"]
+            assert int(time.time()) < credentials["expires_at"] <= int(time.time()) + 600
+            assert username == f'{credentials["expires_at"]}:{host.public}'
+            assert credentials["password"] == base64.b64encode(hmac.digest(secret, username.encode(), hashlib.sha1)).decode()
+            request(relay, "/v1/credentials", b"", proof, expected=401)
+            with tempfile.TemporaryDirectory() as other_directory:
+                other = Host(Path(other_directory))
+                denied = other.proof(relay, second, "credentials", b"")
+                request(relay, "/v1/credentials", b"", denied, expected=403)
     print("Two directories kept independent leases, updates, games and withdrawals.")
 
 
