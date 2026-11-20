@@ -62,3 +62,25 @@ jobs:
             --tag "$IMAGE:$TAG" --tag "$IMAGE:latest" .
       - name: Attach Linux archives
         run: gh release upload "$TAG" dist/*.tar.gz
+
+  announce:
+    needs: [release-please, publish]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Post the directory release to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            printf '%s\n' 'Discord webhook is not configured.'
+            exit 0
+          fi
+          release_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          payload=$(jq -cn --arg title "OpenReliant Directory $TAG" --arg url "$release_url" \
+            '{content: ("**" + $title + "**\n[Downloads and release notes](" + $url + ")"),
+              allowed_mentions: {parse: []}}')
+          curl --fail --silent --show-error --retry 3 --retry-max-time 40 --max-time 15 \
+            --output /dev/null --header 'Content-Type: application/json' \
+            --data "$payload" "$DISCORD_WEBHOOK?wait=true"
