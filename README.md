@@ -37,6 +37,10 @@ IP. Do not append to an incoming value. Keep the backend port available only to 
 Publishing the backend directly exposes an unencrypted, unauthenticated HTTP endpoint.
 The service accepts eight concurrent connections by default. `--max-connections` changes
 the limit up to 1024. Configure connection limits at the proxy for public deployments.
+
+Some hosting providers route requests through private addresses even for public servers.
+With a trusted proxy, `--allow-private-publishers` accepts those publishers when their signed
+advertisement supplies a public game IP. The proxy must supply the real client address.
 For example, an nginx location can use these settings.
 
 ```nginx

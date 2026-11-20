@@ -11,6 +11,7 @@ const usage =
     \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
     \\                             [--no-update-check]
     \\                             [--max-connections COUNT]
+    \\                             [--allow-private-publishers]
     \\       openreliant-directory --version
     \\
     \\The default listener is 127.0.0.1:8080. Put an HTTPS proxy in front of a public instance.
@@ -44,7 +45,7 @@ pub fn main(init: std.process.Init) !u8 {
         update_check.concurrent(init.io, updates.check, .{init.io}) catch |err|
             std.log.debug("could not start the release check: {t}", .{err});
     }
-    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .registry = registry, .max_connections = settings.max_connections };
+    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .allow_private_publishers = settings.allow_private_publishers, .registry = registry, .max_connections = settings.max_connections };
     try server.serve(settings.bind);
     return 0;
 }
@@ -52,6 +53,7 @@ pub fn main(init: std.process.Init) !u8 {
 const Settings = struct {
     bind: std.Io.net.IpAddress = .{ .ip4 = .loopback(8080) },
     trust_proxy: bool = false,
+    allow_private_publishers: bool = false,
     check_updates: bool = true,
     max_connections: usize = Server.default_connections,
     policy: Registry.Policy = .{},
@@ -61,6 +63,10 @@ const Settings = struct {
         var next: usize = 0;
         while (next < args.len) : (next += 1) {
             const argument = args[next];
+            if (std.mem.eql(u8, argument, "--allow-private-publishers")) {
+                settings.allow_private_publishers = true;
+                continue;
+            }
             if (std.mem.eql(u8, argument, "--no-update-check")) {
                 settings.check_updates = false;
                 continue;
@@ -86,6 +92,7 @@ const Settings = struct {
             } else return error.UnknownOption;
         }
         if (settings.trust_proxy and !Server.loopback(settings.bind)) return error.ProxyNeedsLoopback;
+        if (settings.allow_private_publishers and !settings.trust_proxy) return error.PrivatePublishersNeedProxy;
         return settings;
     }
 };
