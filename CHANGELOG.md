@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/OpenReliant/openreliant-directory/compare/v0.3.0...v0.3.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* replace stale listings when a host restarts ([17af960](https://github.com/OpenReliant/openreliant-directory/commit/17af960a41383e2fe13a76a7697e01dacbb4021d))
+* replace stale listings when a host restarts ([bafa1fb](https://github.com/OpenReliant/openreliant-directory/commit/bafa1fbcd99064a547acdc9ad100942638cca310))
+
 ## [0.3.0](https://github.com/OpenReliant/openreliant-directory/compare/v0.2.0...v0.3.0) (2026-11-20)
 
 
