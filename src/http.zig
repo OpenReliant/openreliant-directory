@@ -7,13 +7,14 @@ const Registry = @import("registry.zig");
 const Server = @This();
 const log = std.log.scoped(.directory);
 
-const max_connections = 8;
+pub const default_connections = 8;
 const max_response = Registry.page_size * (protocol.max_body + 512) + 256;
 const Request = std.http.Server.Request;
 
 io: Io,
 trust_proxy: bool,
 registry: *Registry,
+max_connections: usize = default_connections,
 mutex: Io.Mutex = .init,
 active: std.atomic.Value(usize) = .init(0),
 
@@ -33,7 +34,7 @@ pub fn serve(server: *Server, address: net.IpAddress) !void {
                 continue;
             },
         };
-        if (server.active.fetchAdd(1, .monotonic) < max_connections) {
+        if (server.active.fetchAdd(1, .monotonic) < server.max_connections) {
             if (workers.concurrent(server.io, serveConnection, .{ server, stream })) |_| continue else |_| {}
         }
         _ = server.active.fetchSub(1, .monotonic);

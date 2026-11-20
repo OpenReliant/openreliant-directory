@@ -34,6 +34,9 @@ curl http://127.0.0.1:8080/v1/capabilities
 For a public instance, put an HTTPS reverse proxy in front of the loopback listener and add
 `--trust-proxy`. Configure the proxy to overwrite `X-Forwarded-For` with the original client
 IP. Do not append to an incoming value. Keep the backend port available only to the proxy.
+Publishing the backend directly exposes an unencrypted, unauthenticated HTTP endpoint.
+The service accepts eight concurrent connections by default. `--max-connections` changes
+the limit up to 1024. Configure connection limits at the proxy for public deployments.
 For example, an nginx location can use these settings.
 
 ```nginx

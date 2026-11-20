@@ -86,11 +86,13 @@ pub const Error = error{ Busy, RateLimited, Unauthorised, Forbidden, Missing, St
 
 /// At most 120 requests per source per minute. A full rate table remains bounded.
 pub fn admit(registry: *Registry, address: net.IpAddress, now: i64) Error!void {
+    var network = address;
+    if (network == .ip6) @memset(network.ip6.bytes[8..], 0);
     var free: ?*?Rate = null;
     for (&registry.rates) |*entry| {
         if (entry.*) |*rate| {
             if (rate.until > now) {
-                if (!rate.address.eql(&address)) continue;
+                if (!rate.address.eql(&network)) continue;
                 if (rate.requests >= 120) return error.RateLimited;
                 rate.requests += 1;
                 return;
@@ -99,7 +101,20 @@ pub fn admit(registry: *Registry, address: net.IpAddress, now: i64) Error!void {
         if (free == null) free = entry;
     }
     const slot = free orelse return error.Busy;
-    slot.* = .{ .address = address, .until = now + 60, .requests = 1 };
+    slot.* = .{ .address = network, .until = now + 60, .requests = 1 };
+}
+
+test "IPv6 addresses in one subnet share the request allowance" {
+    const registry = try std.testing.allocator.create(Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.* = .{};
+    for (0..120) |index| {
+        var address = try net.IpAddress.parse("2606:4700:abcd:1234::", 0);
+        address.ip6.bytes[15] = @intCast(index);
+        try registry.admit(address, 0);
+    }
+    try std.testing.expectError(error.RateLimited, registry.admit(try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), 0));
+    try registry.admit(try net.IpAddress.parse("2606:4700:abcd:1235::1", 0), 0);
 }
 
 pub fn challenge(registry: *Registry, who: Identity, source: net.IpAddress, operation: Operation, token: Token, now: i64) Error!void {
