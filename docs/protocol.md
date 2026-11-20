@@ -146,7 +146,11 @@ and `content` are optional. `scenario` uses the same shape as `mode`. IDs are 1 
 64 lowercase ASCII bytes. Internal hyphens, underscores and dots are allowed.
 Use a namespaced game ID, for example `org.openreliant.starlancer`.
 Names are limited to 96 UTF-8 bytes, descriptions to 512, release names to 64 and content
-summaries to 256. Addresses are built from the observed public IP and the signed UDP port.
+summaries to 256. Addresses use the observed public IP and the signed UDP port. A host
+behind a provider with separate inbound and outbound addresses may set `address` to a
+public IP literal in its signed advertisement. The directory does not verify that address.
+Clients must verify the advertised host key when connecting. Publisher quotas continue
+to use the observed source address.
 
 A listing contains `key`, `session`, `address`, `reachability`,
 `expires_in_seconds` and the original `advertisement`. Reachability is `unverified`.
