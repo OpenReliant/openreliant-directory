@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2](https://github.com/OpenReliant/openreliant-directory/compare/v0.3.1...v0.3.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* keep full rate and challenge tables from refusing everyone ([ef517e2](https://github.com/OpenReliant/openreliant-directory/commit/ef517e2f0fbffe883e710b9ec3d944121dc1f144))
+* keep listings to the publisher's own address and share scarce places fairly ([b181e01](https://github.com/OpenReliant/openreliant-directory/commit/b181e01dae8ea9344157be88fdf5ad66c8c54c12))
+* stop one source from filling the directory or aiming players' pings elsewhere ([d4a18dd](https://github.com/OpenReliant/openreliant-directory/commit/d4a18ddc05d7ec32dee1239edef0150780293db5))
+
 ## [0.3.1](https://github.com/OpenReliant/openreliant-directory/compare/v0.3.0...v0.3.1) (2026-11-20)
 
 
