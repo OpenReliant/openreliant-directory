@@ -104,15 +104,38 @@ pub const Proof = struct {
     token: Token,
     signature: [signature_size]u8,
 
-    pub fn verify(proof: Proof, operation: Operation, body: []const u8) bool {
-        if (body.len > max_body) return false;
+    /// Checks the signature. This is the only way to make a `Verified`, so the registry can
+    /// take one without checking the signature again while it holds its lock.
+    pub fn verified(proof: Proof, operation: Operation, body: []const u8) ?Verified {
+        if (body.len > max_body) return null;
         var buffer: [max_signed_message]u8 = undefined;
-        const text = signedBytes(&buffer, operation, proof.token, proof.identity.session, body) catch return false;
-        const key = Ed25519.PublicKey.fromBytes(proof.identity.key) catch return false;
-        Ed25519.Signature.fromBytes(proof.signature).verify(text, key) catch return false;
-        return true;
+        const text = signedBytes(&buffer, operation, proof.token, proof.identity.session, body) catch return null;
+        const key = Ed25519.PublicKey.fromBytes(proof.identity.key) catch return null;
+        Ed25519.Signature.fromBytes(proof.signature).verify(text, key) catch return null;
+        return .{ .identity = proof.identity, .token = proof.token, .operation = operation };
     }
 };
+
+/// A proof whose signature matched its operation and body.
+pub const Verified = struct {
+    identity: Identity,
+    token: Token,
+    operation: Operation,
+};
+
+/// The source that quotas count an address under. An IPv6 host can use any address of its /64,
+/// so the whole /64 is one source.
+pub fn sourceOf(address: net.IpAddress) net.IpAddress {
+    var source = address;
+    if (source == .ip6) @memset(source.ip6.bytes[8..], 0);
+    return source;
+}
+
+pub fn sameSource(a: net.IpAddress, b: net.IpAddress) bool {
+    const first = sourceOf(a);
+    const second = sourceOf(b);
+    return first.eql(&second);
+}
 
 pub fn signedBytes(
     buffer: *[max_signed_message]u8,
@@ -133,7 +156,7 @@ pub fn publicAddress(address: net.IpAddress) ?net.IpAddress {
         if (a == 0 or a == 10 or a == 127 or a >= 224) return null;
         if ((a == 100 and b >= 64 and b < 128) or (a == 169 and b == 254) or
             (a == 172 and b >= 16 and b < 32) or (a == 192 and b == 168) or
-            (a == 192 and (b == 0 or (b == 88 and c == 99))) or
+            (a == 192 and ((b == 0 and (c == 0 or c == 2)) or (b == 88 and c == 99))) or
             (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or
             (a == 203 and b == 0 and c == 113)) return null;
         return .{ .ip4 = ip };
@@ -148,8 +171,10 @@ pub fn publicAddress(address: net.IpAddress) ?net.IpAddress {
 }
 
 test "public endpoints reject local, mapped private and documentation addresses" {
-    for ([_][]const u8{ "127.0.0.1", "10.1.0.8", "100.64.0.1", "192.0.2.8", "::1", "::ffff:192.168.0.4", "2001:db8::2", "3fff::1" }) |text| {
+    for ([_][]const u8{ "127.0.0.1", "10.1.0.8", "100.64.0.1", "192.0.0.8", "192.0.2.8", "::1", "::ffff:192.168.0.4", "2001:db8::2", "3fff::1" }) |text| {
         try std.testing.expect(publicAddress(try net.IpAddress.parse(text, 0)) == null);
     }
-    try std.testing.expect(publicAddress(try net.IpAddress.parse("8.8.8.8", 0)) != null);
+    for ([_][]const u8{ "8.8.8.8", "192.0.1.1", "192.0.66.2", "2606:4700::1" }) |text| {
+        try std.testing.expect(publicAddress(try net.IpAddress.parse(text, 0)) != null);
+    }
 }

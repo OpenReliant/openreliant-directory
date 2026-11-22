@@ -141,6 +141,14 @@ def main(binary):
 
             assert not listings(a)
             request(a, "/v1/challenge", b"{}", expected=403, source="127.0.0.1")
+            # A host on a public address names another one only when the operator allows its key.
+            elsewhere = {**ad, "address": "1.1.1.1"}
+            host.publish(a, first, "register", elsewhere, expected=403)
+            host.publish(a, first, "register", {**ad, "address": PUBLISHER})
+            host.publish(a, first, "withdraw", None, expected=204)
+        with service(binary, "--address-host", host.public) as named:
+            host.publish(named, first, "register", elsewhere)
+            assert listings(named)[0]["address"] == "1.1.1.1:27020"
         with service(binary, "--allow-private-publishers") as private:
             internal = "10.2.3.4"
             host.publish(private, first, "register", ad, expected=403, source=internal)

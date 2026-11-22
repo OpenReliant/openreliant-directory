@@ -37,6 +37,7 @@ IP. Do not append to an incoming value. Keep the backend port available only to 
 Publishing the backend directly exposes an unencrypted, unauthenticated HTTP endpoint.
 The service accepts eight concurrent connections by default. `--max-connections` changes
 the limit up to 1024. Configure connection limits at the proxy for public deployments.
+Without `--trust-proxy`, one source address holds at most a quarter of the connections.
 
 Some hosting providers route requests through private addresses even for public servers.
 With a trusted proxy, `--allow-private-publishers` accepts those publishers when their signed
@@ -49,6 +50,10 @@ location / {
     proxy_pass http://127.0.0.1:8080;
 }
 ```
+
+A host is listed at the address it publishes from. A host that publishes from a public
+address can name another public address only if you allow its key with `--address-host`,
+because players' games ping every listed address.
 
 Use `--bind` to change the listener and `--allow-game` or `--allow-host` if the instance
 lists one game or one host key. Listings are held in memory. Hosts re-register after a restart.
@@ -90,11 +95,11 @@ The game still needs rendezvous integration to obtain and distribute these crede
 
 The release workflow publishes Linux x86_64 and AArch64 archives and a single multi-architecture
 image at `ghcr.io/openreliant/openreliant-directory`. On a Linux host with a local HTTPS proxy,
-run the published image with a loopback backend.
+run the published image with a loopback backend. This is the image's default command,
+so it needs host networking to be reachable.
 
 ```sh
-docker run --rm --network host ghcr.io/openreliant/openreliant-directory:latest \
-  --bind 127.0.0.1:8080 --trust-proxy
+docker run --rm --network host ghcr.io/openreliant/openreliant-directory:latest
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build and integration checks.
