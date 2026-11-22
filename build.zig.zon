@@ -1,6 +1,6 @@
 .{
     .name = .openreliant_directory,
-    .version = "0.3.2", // x-release-please-version
+    .version = "0.4.0", // x-release-please-version
     .fingerprint = 0x685936ade68a0626,
     .minimum_zig_version = "0.17.1",
     .paths = .{ "build.zig", "build.zig.zon", "src" },

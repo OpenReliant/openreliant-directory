@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/OpenReliant/openreliant-directory/compare/v0.3.2...v0.4.0) (2026-11-22)
+
+
+### Features
+
+* let a host take rendezvous without being listed ([828d7ff](https://github.com/OpenReliant/openreliant-directory/commit/828d7ff4dbdb55ffaa1a3efdc7c6f0bca50b612b))
+* pass connection signals between a listed host and a joining player ([653ca20](https://github.com/OpenReliant/openreliant-directory/commit/653ca20d8081fc53fe77e32173238d58bd5408d7))
+* pass connection signals between a listed host and a joining player ([f748079](https://github.com/OpenReliant/openreliant-directory/commit/f74807942c074d06a7c7fee65b18e0e400f56919))
+
 ## [0.3.2](https://github.com/OpenReliant/openreliant-directory/compare/v0.3.1...v0.3.2) (2026-11-22)
 
 
