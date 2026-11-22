@@ -9,7 +9,9 @@ A group, organisation or region can run its own directory. Hosts can register wi
 instances independently. For example, a German community can run a directory for German-speaking
 games. OpenReliant's host advertising and server browser, including merging results and marking
 incompatible servers, are tracked in [#957](https://github.com/OpenReliant/openreliant/issues/957).
-Rendezvous is planned. An operator can add STUN and an authorised TURN relay using coturn.
+With rendezvous, a host behind a home router can be joined without a forwarded port: the
+directory passes the two games' connection signals to each other, and they then connect directly.
+An operator can add STUN and an authorised TURN relay using coturn.
 The capabilities endpoint reports which features the operator configured.
 
 ## Design
@@ -54,6 +56,10 @@ location / {
 A host is listed at the address it publishes from. A host that publishes from a public
 address can name another public address only if you allow its key with `--address-host`,
 because players' games ping every listed address.
+
+Rendezvous is on by default and holds only short-lived signals in memory. `--no-rendezvous`
+turns it off. For it to help, also advertise a STUN endpoint (below), which is how each game
+learns its public address.
 
 Use `--bind` to change the listener and `--allow-game` or `--allow-host` if the instance
 lists one game or one host key. Listings are held in memory. Hosts re-register after a restart.

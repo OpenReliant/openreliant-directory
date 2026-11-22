@@ -50,6 +50,9 @@ pub const Advertisement = struct {
     content: []const u8 = "",
     port: u16,
     address: ?[]const u8 = null,
+    /// Whether players reach the host through this directory's rendezvous, for a host behind a
+    /// router with no forwarded port.
+    rendezvous: bool = false,
 
     pub fn valid(ad: Advertisement) bool {
         return labelValid(ad.game) and ad.revision != 0 and textValid(ad.name, 96, false) and

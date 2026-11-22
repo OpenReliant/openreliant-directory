@@ -193,4 +193,50 @@ the most listings gives up the one that expires first to a source that would sti
 fewer afterwards. A host that loses a listing this way gets 404 on its next renewal and
 registers again. Request a fresh challenge when retrying a signed operation.
 The service can advertise an operator-configured STUN or TURN endpoint and issue credentials
-to authorised TURN hosts. Rendezvous and game-side credential distribution are not implemented.
+to authorised TURN hosts. Game-side credential distribution is not implemented.
+
+## Rendezvous
+
+A host behind a router with no forwarded port can't be reached at its listed address. With
+rendezvous, the directory passes the two sides' connection signals to each other, and the game
+then connects them directly. The directory doesn't read the signals and never dials anything.
+The capabilities endpoint reports `rendezvous` as true where the instance offers it. An operator
+turns it off with `--no-rendezvous`.
+
+A host asks for it with `"rendezvous": true` in its signed advertisement. Only send the field to
+an instance that reports the capability, since an instance that doesn't know a field refuses the
+advertisement. The answer to `register` and `renew` then carries `rendezvous_token`, 64 hex
+digits. The token is the host's secret for its mailbox. It stays the same while the session is
+listed, and ends with the lease, with a withdrawal, when a new session of the same host
+registers, and when the host stops asking.
+
+| Request | Body | Response |
+|---|---|---|
+| `POST /v1/rendezvous/offer` | `key` and `session` of a listing, and the first `signal` | `id` of the new exchange and `expires_in_seconds` |
+| `POST /v1/rendezvous/send` | `id` and a `signal` | 204 |
+| `POST /v1/rendezvous/poll` | A player: `id`. A host: an empty object | A player: `signals`. A host: `exchanges`, each with its `id` and `signals` |
+
+A player sends no credentials: the exchange's `id`, 32 hex digits from the offer's answer, is its
+secret. A host sends its token in `X-Directory-Rendezvous`. A signal is base64 of up to 2880
+bytes. A poll returns each waiting signal once, oldest first, up to about 16 KiB an answer, and
+leaves the rest for the next poll.
+
+The game's own connection still has to check the host's key from the listing. The directory
+only carries the signals, so a directory that altered them could stop a connection but could not
+stand in for the host.
+
+Limits:
+
+- An exchange lives 60 seconds, and ends after 30 seconds without a signal or a poll.
+- Eight signals wait in each direction. A ninth gets 429 until the reader takes some.
+- One source holds four open exchanges and makes twelve offers a minute. More get 429.
+- A listing has eight open exchanges. A ninth offer replaces its oldest one, and a full table
+  of 64 drops its oldest exchange, so offers nobody follows up keep no player out.
+- Rendezvous requests have an allowance of their own, 600 a minute for a source, so polling
+  doesn't use up the 120 a minute that browsing and publishing share.
+- Errors: 400 for a malformed request or signal, 401 for a host token that isn't a listed
+  host's, 404 for an exchange or a listing that isn't there, 413 for a large body and 429 for a
+  quota or a full mailbox.
+
+A host polls every second or two while it accepts players, and both sides poll a few times a
+second while a player joins.

@@ -2,6 +2,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const Registry = @import("registry.zig");
+const Exchanges = @import("rendezvous.zig");
 const Server = @import("http.zig");
 const updates = @import("updates.zig");
 const version = @import("version.zig");
@@ -9,7 +10,7 @@ const version = @import("version.zig");
 const usage =
     \\Usage: openreliant-directory [--bind ADDRESS:PORT] [--trust-proxy]
     \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
-    \\                             [--no-update-check]
+    \\                             [--no-update-check] [--no-rendezvous]
     \\                             [--max-connections COUNT]
     \\                             [--allow-private-publishers] [--address-host PUBLIC-KEY]
     \\                             [--stun ENDPOINT] [--turn ENDPOINT]
@@ -22,6 +23,8 @@ const usage =
     \\A host is listed at the address it publishes from. Give --address-host for each host
     \\that may name another public address in its advertisement.
     \\Use --no-update-check to skip checking for releases on GitHub at startup.
+    \\Use --no-rendezvous to list games only, without passing signals between a host and a
+    \\player joining it.
     \\
 ;
 
@@ -46,6 +49,9 @@ pub fn main(init: std.process.Init) !u8 {
     const connections = try init.gpa.alloc(?std.Io.net.IpAddress, settings.max_connections);
     defer init.gpa.free(connections);
     @memset(connections, null);
+    const exchanges: ?*Exchanges = if (settings.rendezvous) try init.gpa.create(Exchanges) else null;
+    defer if (exchanges) |held| init.gpa.destroy(held);
+    if (exchanges) |held| held.* = .{};
     std.log.info("OpenReliant Directory {s}", .{version.string});
     var update_check: std.Io.Group = .init;
     defer update_check.cancel(init.io);
@@ -60,7 +66,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     const turn_secret = if (secret) |bytes| std.mem.trim(u8, bytes, "\r\n") else null;
     if (turn_secret) |bytes| if (bytes.len < 32) return error.ShortTurnSecret;
-    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .allow_private_publishers = settings.allow_private_publishers, .stun = settings.stun, .turn = settings.turn, .turn_hosts = settings.turn_hosts[0..settings.turn_host_count], .turn_secret = turn_secret, .registry = registry, .connections = connections };
+    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .allow_private_publishers = settings.allow_private_publishers, .stun = settings.stun, .turn = settings.turn, .turn_hosts = settings.turn_hosts[0..settings.turn_host_count], .turn_secret = turn_secret, .registry = registry, .exchanges = exchanges, .connections = connections };
     try server.serve(settings.bind);
     return 0;
 }
@@ -70,6 +76,7 @@ const Settings = struct {
     trust_proxy: bool = false,
     allow_private_publishers: bool = false,
     check_updates: bool = true,
+    rendezvous: bool = true,
     stun: ?[]const u8 = null,
     turn: ?[]const u8 = null,
     turn_hosts: [64]protocol.Key = undefined,
@@ -91,6 +98,10 @@ const Settings = struct {
             }
             if (std.mem.eql(u8, argument, "--no-update-check")) {
                 settings.check_updates = false;
+                continue;
+            }
+            if (std.mem.eql(u8, argument, "--no-rendezvous")) {
+                settings.rendezvous = false;
                 continue;
             }
             if (std.mem.eql(u8, argument, "--trust-proxy")) {
@@ -138,6 +149,7 @@ const Settings = struct {
 test {
     std.testing.refAllDecls(protocol);
     std.testing.refAllDecls(Registry);
+    _ = Exchanges;
     _ = Server;
     _ = updates;
     _ = version;

@@ -45,7 +45,7 @@ def service(binary, *options):
             try:
                 capabilities = request(port, "/v1/capabilities")
                 assert capabilities["version"] == 1 and capabilities["service_version"] == version
-                assert capabilities["listings"] and not capabilities["rendezvous"]
+                assert capabilities["listings"] and capabilities["rendezvous"] == ("--no-rendezvous" not in options)
                 for name in ("stun", "turn"):
                     endpoint = options[options.index("--" + name) + 1] if "--" + name in options else None
                     assert capabilities[name] == (endpoint is not None)
@@ -86,6 +86,128 @@ class Host:
 
 def listings(port, game="org.openreliant.starlancer"):
     return request(port, f"/v1/listings?game={game}")["listings"]
+
+
+def signal(data):
+    return base64.b64encode(data).decode()
+
+
+def post(port, path, body, expected=200, source=PUBLISHER, token=None):
+    headers = {"X-Directory-Rendezvous": token} if token is not None else None
+    return request(port, path, json.dumps(body).encode() if not isinstance(body, bytes) else body, headers, expected, source)
+
+
+def check_rendezvous(binary, host, ad, sessions):
+    """A host and a joining player pass signals through their exchange, and nobody else can."""
+    first, second = sessions
+    offer, send, poll = (f"/v1/rendezvous/{action}" for action in ("offer", "send", "poll"))
+    listed = {**ad, "hosting": "player_hosted", "rendezvous": True}
+    joiner = "9.9.9.9"
+    with service(binary) as port:
+        lease = host.publish(port, first, "register", listed)
+        token = lease["rendezvous_token"]
+        assert len(token) == 64 and listings(port)[0]["advertisement"]["rendezvous"] is True
+        # A renewal and an update keep the token.
+        assert host.publish(port, first, "renew", listed)["rendezvous_token"] == token
+        assert host.publish(port, first, "renew", {**listed, "revision": 2, "players": 1})["rendezvous_token"] == token
+        listed = {**listed, "revision": 2, "players": 1}
+        target = {"key": host.public, "session": first}
+
+        # The exchange: an offer, the host's poll, an answer, the player's poll. Each signal is read once.
+        exchange = post(port, offer, {**target, "signal": signal(b"offer")}, source=joiner)
+        assert len(exchange["id"]) == 32 and exchange["expires_in_seconds"] == 60
+        post(port, send, {"id": exchange["id"], "signal": signal(b"more")}, 204, joiner)
+        waiting = post(port, poll, {}, token=token)["exchanges"]
+        assert waiting == [{"id": exchange["id"], "signals": [signal(b"offer"), signal(b"more")]}], waiting
+        assert post(port, poll, {}, token=token) == {"exchanges": []}
+        post(port, send, {"id": exchange["id"], "signal": signal(b"answer")}, 204, token=token)
+        assert post(port, poll, {"id": exchange["id"]}, source=joiner) == {"signals": [signal(b"answer")]}
+        assert post(port, poll, {"id": exchange["id"]}, source=joiner) == {"signals": []}
+
+        # Tokens and ids: wrong, malformed, someone else's, or missing.
+        post(port, poll, {}, 401, token="00" * 32)
+        post(port, poll, {}, 401, token="not-a-token")
+        post(port, poll, {}, 400)
+        post(port, poll, {"id": "00" * 16}, 404, joiner)
+        post(port, poll, {"id": "short"}, 400, joiner)
+        post(port, poll, {"id": exchange["id"]}, 400, token=token)
+        post(port, send, {"id": "00" * 16, "signal": signal(b"x")}, 404, joiner)
+        post(port, send, {"id": exchange["id"], "signal": signal(b"x")}, 401, token="11" * 32)
+        with tempfile.TemporaryDirectory() as other_folder:
+            other = Host(Path(other_folder))
+            theirs = other.publish(port, second, "register", listed, source="7.7.7.7")["rendezvous_token"]
+            # Another listed host can't write into this exchange, and doesn't see it.
+            post(port, send, {"id": exchange["id"], "signal": signal(b"x")}, 404, token=theirs)
+            assert post(port, poll, {}, token=theirs) == {"exchanges": []}
+            other.publish(port, second, "withdraw", None, expected=204, source="7.7.7.7")
+            post(port, poll, {}, 401, token=theirs)
+
+        # Malformed and oversized requests.
+        post(port, offer, {**target, "signal": signal(b"x" * 2881)}, 400, joiner)
+        post(port, offer, {**target, "signal": ""}, 400, joiner)
+        post(port, offer, {**target, "signal": "not base64!"}, 400, joiner)
+        post(port, offer, target, 400, joiner)
+        post(port, offer, {**target, "signal": signal(b"x"), "extra": 1}, 400, joiner)
+        post(port, offer, {**target, "signal": signal(b"x")}, 400, joiner, token=token)
+        post(port, offer, {"key": host.public, "session": second, "signal": signal(b"x")}, 404, joiner)
+        post(port, offer, {"key": "zz", "session": first, "signal": signal(b"x")}, 400, joiner)
+        post(port, offer, b"{" + b" " * 5000 + b"}", 413, joiner)
+        post(port, offer, b"not json", 400, joiner)
+        post(port, "/v1/rendezvous/other", {}, 404, joiner)
+        request(port, poll, expected=404, source=joiner)
+
+        # A mailbox holds eight signals. The ninth is refused until the reader takes some.
+        for _ in range(8):
+            post(port, send, {"id": exchange["id"], "signal": signal(b"y")}, 204, joiner)
+        post(port, send, {"id": exchange["id"], "signal": signal(b"y")}, 429, joiner)
+        assert len(post(port, poll, {}, token=token)["exchanges"][0]["signals"]) == 8
+        post(port, send, {"id": exchange["id"], "signal": signal(b"y")}, 204, joiner)
+
+        # One source opens four exchanges at most.
+        for _ in range(3):
+            post(port, offer, {**target, "signal": signal(b"x")}, source=joiner)
+        post(port, offer, {**target, "signal": signal(b"x")}, 429, joiner)
+        # A listing at its eight gives up its oldest, so offers nobody follows up keep no player out.
+        ids = [post(port, offer, {**target, "signal": signal(b"x")}, source=f"6.6.6.{n}")["id"] for n in range(8)]
+        post(port, send, {"id": exchange["id"], "signal": signal(b"x")}, 404, joiner)
+        post(port, send, {"id": ids[-1], "signal": signal(b"x")}, 204, "6.6.6.7")
+        # One source makes twelve offers a minute, however fast its exchanges are pushed out.
+        results = []
+        for n in range(16):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("POST", offer, json.dumps({**target, "signal": signal(b"x")}), {"X-Forwarded-For": "5.5.5.5"})
+            results.append(connection.getresponse().status)
+            connection.close()
+        assert results.count(200) <= 12 and 429 in results, results
+
+        # Polling has an allowance of its own, which runs out too.
+        statuses = set()
+        for _ in range(610):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("POST", poll, json.dumps({"id": "00" * 16}), {"X-Forwarded-For": "4.4.4.4"})
+            statuses.add(connection.getresponse().status)
+            connection.close()
+        assert statuses == {404, 429}, statuses
+        assert listings(port), "browsing shares no allowance with signalling"
+
+        # A new session ends the old one's exchanges and token, and so does a withdrawal.
+        live = post(port, offer, {**target, "signal": signal(b"x")}, source="3.3.3.3")["id"]
+        renewed = host.publish(port, second, "register", listed)["rendezvous_token"]
+        assert renewed != token
+        post(port, poll, {}, 401, token=token)
+        post(port, send, {"id": live, "signal": signal(b"x")}, 404, "3.3.3.3")
+        live = post(port, offer, {"key": host.public, "session": second, "signal": signal(b"x")}, source="3.3.3.3")["id"]
+        host.publish(port, second, "withdraw", None, expected=204)
+        post(port, send, {"id": live, "signal": signal(b"x")}, 404, "3.3.3.3")
+        post(port, poll, {}, 401, token=renewed)
+        post(port, offer, {"key": host.public, "session": second, "signal": signal(b"x")}, 404, "3.3.3.3")
+
+    # An instance without rendezvous lists the game, gives no token and has no routes for it.
+    with service(binary, "--no-rendezvous") as port:
+        lease = host.publish(port, first, "register", listed)
+        assert "rendezvous_token" not in lease, lease
+        post(port, offer, {**target, "signal": signal(b"x")}, 404, joiner)
+        host.publish(port, first, "withdraw", None, expected=204)
 
 
 def main(binary):
@@ -174,7 +296,9 @@ def main(binary):
                 other = Host(Path(other_directory))
                 denied = other.proof(relay, second, "credentials", b"")
                 request(relay, "/v1/credentials", b"", denied, expected=403)
+        check_rendezvous(binary, host, ad, (first, second))
     print("Two directories kept independent leases, updates, games and withdrawals.")
+    print("Rendezvous passed signals between a host and a player, and refused everyone else.")
 
 
 if __name__ == "__main__":

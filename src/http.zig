@@ -5,6 +5,7 @@ const net = Io.net;
 const protocol = @import("protocol.zig");
 const version = @import("version.zig");
 const Registry = @import("registry.zig");
+const Exchanges = @import("rendezvous.zig");
 const Server = @This();
 const log = std.log.scoped(.directory);
 
@@ -20,6 +21,8 @@ turn: ?[]const u8 = null,
 turn_hosts: []const protocol.Key = &.{},
 turn_secret: ?[]const u8 = null,
 registry: *Registry,
+/// The rendezvous mailboxes, or null where the operator turned rendezvous off.
+exchanges: ?*Exchanges = null,
 /// The address of each open connection, one place for each connection the service allows.
 connections: []?net.IpAddress,
 connections_mutex: Io.Mutex = .init,
@@ -130,7 +133,8 @@ fn respond(server: *Server, stream: net.Stream) void {
     const admitted = rate: {
         server.mutex.lock(server.io) catch return;
         defer server.mutex.unlock(server.io);
-        break :rate server.registry.admit(source, now);
+        const signalling = std.mem.startsWith(u8, request.head.target, rendezvous_prefix);
+        break :rate server.registry.admit(source, if (signalling) .signalling else .general, now);
     };
     admitted catch |err| {
         reply(&request, status(err), "{}");
@@ -155,7 +159,7 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
                 .version = 1,
                 .service_version = version.string,
                 .listings = true,
-                .rendezvous = false,
+                .rendezvous = server.exchanges != null,
                 .stun = server.stun != null,
                 .turn = server.turn != null,
                 .stun_endpoint = server.stun,
@@ -172,6 +176,7 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     }
     if (request.head.method != .POST) return error.WrongMethod;
     if (query.len != 0) return error.InvalidRequest;
+    if (std.mem.startsWith(u8, path, rendezvous_prefix)) return server.rendezvous(request, path[rendezvous_prefix.len..], source);
 
     const prefix = "/v1/";
     if (!std.mem.startsWith(u8, path, prefix)) return error.Missing;
@@ -231,22 +236,134 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
     };
     // The signature is checked before the registry's lock is taken.
     const verified = proof.?.verified(op, body) orelse return error.Unauthorised;
+    var fresh: protocol.Token = undefined;
+    try server.io.randomSecure(&fresh);
+    var lease: Registry.Lease = .{};
     {
         try server.mutex.lock(server.io);
         defer server.mutex.unlock(server.io);
         try server.registry.authorise(verified, public, received_at);
         if (advertisement) |ad| {
-            try server.registry.advertise(op, proof.?.identity, public, ad, body, received_at);
-        } else server.registry.withdraw(proof.?.identity);
+            lease = try server.registry.advertise(op, proof.?.identity, public, ad, body, fresh, received_at);
+        } else {
+            server.registry.withdraw(proof.?.identity);
+            lease.ended = proof.?.identity;
+        }
+        // A session that ends, or stops taking rendezvous, closes its exchanges.
+        if (server.exchanges) |exchanges| if (lease.ended) |ended| exchanges.close(ended);
     }
     if (op == .withdraw) {
         reply(request, .no_content, "");
         return;
     }
-    var buffer: [128]u8 = undefined;
+    var buffer: [256]u8 = undefined;
     var result: Io.Writer = .fixed(&buffer);
-    try std.json.Stringify.value(.{ .expires_in_seconds = Registry.lease_seconds, .renew_after_seconds = Registry.renewal_seconds }, .{}, &result);
+    // The token is only of use where this instance runs rendezvous.
+    const token = if (server.exchanges != null) if (lease.rendezvous) |held| std.fmt.bytesToHex(held, .lower) else null else null;
+    try std.json.Stringify.value(.{
+        .expires_in_seconds = Registry.lease_seconds,
+        .renew_after_seconds = Registry.renewal_seconds,
+        .rendezvous_token = if (token) |*hex| @as(?[]const u8, hex) else null,
+    }, .{ .emit_null_optional_fields = false }, &result);
     reply(request, .ok, result.buffered());
+}
+
+const rendezvous_prefix = "/v1/rendezvous/";
+/// What one poll's answer carries of signals at most. The rest waits for the next poll.
+const poll_room = 16 * 1024;
+
+/// The rendezvous routes: `offer` from a joining player, and `send` and `poll` from either side.
+/// A host names itself with its token in `X-Directory-Rendezvous`, a player with the exchange's id.
+fn rendezvous(server: *Server, request: *Request, action: []const u8, source: net.IpAddress) !void {
+    const exchanges = server.exchanges orelse return error.Missing;
+    const Action = enum { offer, send, poll };
+    const wanted = std.meta.stringToEnum(Action, action) orelse return error.Missing;
+    const length = request.head.content_length orelse return error.InvalidRequest;
+    if (length > protocol.max_body) return error.BodyTooLarge;
+    const token: ?protocol.Token = held: {
+        var headers = request.iterateHeaders();
+        var found: ?[]const u8 = null;
+        while (headers.next()) |header| {
+            if (!std.ascii.eqlIgnoreCase(header.name, "x-directory-rendezvous")) continue;
+            if (found != null) return error.Unauthorised;
+            found = header.value;
+        }
+        break :held protocol.decodeHex(@sizeOf(protocol.Token), found orelse break :held null) catch return error.Unauthorised;
+    };
+    var request_body: [protocol.max_body]u8 = undefined;
+    const body = request_body[0..@intCast(length)];
+    var read_buffer: [1024]u8 = undefined;
+    if (body.len != 0) {
+        const input = request.readerExpectNone(&read_buffer);
+        input.readSliceAll(body) catch return error.InvalidRequest;
+    }
+    const now = Io.Clock.awake.now(server.io).toSeconds();
+    var temporary = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer temporary.deinit();
+    const Sent = struct { key: ?[]const u8 = null, session: ?[]const u8 = null, id: ?[]const u8 = null, signal: ?[]const u8 = null };
+    const sent = std.json.parseFromSliceLeaky(Sent, temporary.allocator(), body, .{}) catch return error.InvalidRequest;
+    var signal_buffer: [Exchanges.max_signal]u8 = undefined;
+    const signal: ?[]const u8 = if (sent.signal) |text| decoded: {
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(text) catch return error.InvalidRequest;
+        if (size == 0 or size > signal_buffer.len) return error.InvalidRequest;
+        decoder.decode(signal_buffer[0..size], text) catch return error.InvalidRequest;
+        break :decoded signal_buffer[0..size];
+    } else null;
+    const id: ?Exchanges.Id = if (sent.id) |text| protocol.decodeHex(@sizeOf(Exchanges.Id), text) catch return error.InvalidRequest else null;
+
+    switch (wanted) {
+        .offer => {
+            if (token != null or sent.id != null) return error.InvalidRequest;
+            const host: protocol.Identity = .{
+                .key = protocol.decodeHex(protocol.public_key_size, sent.key orelse return error.InvalidRequest) catch return error.InvalidRequest,
+                .session = protocol.decodeHex(@sizeOf(protocol.Session), sent.session orelse return error.InvalidRequest) catch return error.InvalidRequest,
+            };
+            var fresh: Exchanges.Id = undefined;
+            try server.io.randomSecure(&fresh);
+            {
+                try server.mutex.lock(server.io);
+                defer server.mutex.unlock(server.io);
+                if (!server.registry.takesRendezvous(host, now)) return error.Missing;
+                try server.registry.admit(source, .offers, now);
+                try exchanges.offer(fresh, host, source, signal orelse return error.InvalidRequest, now);
+            }
+            var buffer: [128]u8 = undefined;
+            var result: Io.Writer = .fixed(&buffer);
+            try std.json.Stringify.value(.{ .id = std.fmt.bytesToHex(fresh, .lower), .expires_in_seconds = Exchanges.lifetime_seconds }, .{}, &result);
+            reply(request, .ok, result.buffered());
+        },
+        .send => {
+            if (sent.key != null or sent.session != null) return error.InvalidRequest;
+            {
+                try server.mutex.lock(server.io);
+                defer server.mutex.unlock(server.io);
+                const host = if (token) |held| server.registry.hostOf(held, now) orelse return error.Unauthorised else null;
+                try exchanges.send(id orelse return error.InvalidRequest, if (host != null) .host else .joiner, host, signal orelse return error.InvalidRequest, now);
+            }
+            reply(request, .no_content, "");
+        },
+        .poll => {
+            if (sent.key != null or sent.session != null or sent.signal != null) return error.InvalidRequest;
+            var buffer: [poll_room + 4096]u8 = undefined;
+            var result: Io.Writer = .fixed(&buffer);
+            {
+                try server.mutex.lock(server.io);
+                defer server.mutex.unlock(server.io);
+                if (token) |held| {
+                    if (sent.id != null) return error.InvalidRequest;
+                    const host = server.registry.hostOf(held, now) orelse return error.Unauthorised;
+                    try result.writeAll("{\"exchanges\":");
+                    try exchanges.pollHost(host, now, &result, poll_room);
+                } else {
+                    try result.writeAll("{\"signals\":");
+                    try exchanges.pollJoiner(id orelse return error.InvalidRequest, now, &result, poll_room);
+                }
+            }
+            try result.writeByte('}');
+            reply(request, .ok, result.buffered());
+        },
+    }
 }
 
 fn credentials(server: *Server, request: *Request, proof: protocol.Proof, source: net.IpAddress, body: []const u8, now: i64) !void {
@@ -362,7 +479,7 @@ fn status(err: anyerror) std.http.Status {
         error.Missing => .not_found,
         error.Conflict, error.Stale => .conflict,
         error.Busy => .service_unavailable,
-        error.RateLimited => .too_many_requests,
+        error.RateLimited, error.Full => .too_many_requests,
         else => .internal_server_error,
     };
 }
