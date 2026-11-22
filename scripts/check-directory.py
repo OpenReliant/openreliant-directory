@@ -202,6 +202,15 @@ def check_rendezvous(binary, host, ad, sessions):
         post(port, poll, {}, 401, token=renewed)
         post(port, offer, {"key": host.public, "session": second, "signal": signal(b"x")}, 404, "3.3.3.3")
 
+    # An unlisted game takes rendezvous but is in no list, and has to take rendezvous.
+    with service(binary) as port:
+        hidden = {**listed, "unlisted": True}
+        assert "rendezvous_token" in host.publish(port, first, "register", hidden)
+        assert not listings(port)
+        post(port, offer, {**target, "signal": signal(b"x")}, source=joiner)
+        host.publish(port, first, "renew", {**hidden, "revision": 3, "rendezvous": False}, expected=400)
+        host.publish(port, first, "withdraw", None, expected=204)
+
     # An instance without rendezvous lists the game, gives no token and has no routes for it.
     with service(binary, "--no-rendezvous") as port:
         lease = host.publish(port, first, "register", listed)

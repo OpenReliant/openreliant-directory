@@ -52,6 +52,8 @@ const Listing = struct {
     /// The secret the host polls and sends its rendezvous signals with, for a listing that
     /// asked for rendezvous. It lasts as long as the host's session is listed.
     rendezvous: ?Token = null,
+    /// Left out of what `browse` returns.
+    unlisted: bool = false,
     game_id: [protocol.max_game_id]u8 = undefined,
     game_len: usize = 0,
     body: [protocol.max_body]u8 = undefined,
@@ -330,6 +332,7 @@ fn crowded(registry: *Registry, source: net.IpAddress, source_count: usize, now:
 
 fn put(listing: *Listing, who: Identity, source: net.IpAddress, address: net.IpAddress, ad: protocol.Advertisement, body: []const u8, now: i64) void {
     listing.* = .{ .identity = who, .address = address, .source = source, .revision = ad.revision, .expires = now + lease_seconds };
+    listing.unlisted = ad.unlisted;
     @memcpy(listing.game_id[0..ad.game.id.len], ad.game.id);
     listing.game_len = ad.game.id.len;
     @memcpy(listing.body[0..body.len], body);
@@ -351,7 +354,7 @@ pub fn browse(registry: *const Registry, game: []const u8, cursor: usize, now: i
     var next: ?usize = null;
     for (registry.listings[@min(cursor, listing_capacity)..], @min(cursor, listing_capacity)..) |*entry, index| {
         const listing = if (entry.*) |*item| item else continue;
-        if (listing.expires <= now or !std.mem.eql(u8, game, listing.game_id[0..listing.game_len])) continue;
+        if (listing.expires <= now or listing.unlisted or !std.mem.eql(u8, game, listing.game_id[0..listing.game_len])) continue;
         if (count == page_size) {
             next = index;
             break;
@@ -628,10 +631,25 @@ test "a listing that asks for rendezvous holds a token for as long as its sessio
     try std.testing.expectEqual(@as(Token, @splat(5)), second.rendezvous.?);
     try std.testing.expectEqual(who, second.ended.?);
     try std.testing.expectEqual(null, registry.hostOf(@splat(2), 4));
+    // An unlisted game takes rendezvous without appearing in the list.
+    var hidden = ad;
+    hidden.unlisted = true;
+    hidden.revision = 2;
+    _ = try registry.advertise(.renew, again, source, hidden, "{}", @splat(7), 4);
+    var listed: [512]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&listed);
+    try registry.browse(ad.game.id, 0, 4, &out);
+    try std.testing.expectEqualStrings("{\"listings\":[],\"next\":null}", out.buffered());
+    try std.testing.expect(registry.takesRendezvous(again, 4));
+    hidden.rendezvous = false;
+    try std.testing.expect(!hidden.valid());
+    ad.revision = 3;
+    _ = try registry.advertise(.renew, again, source, ad, "{}", @splat(8), 4);
+    ad.revision = 1;
     // The token goes with the lease, and when the host stops asking.
     try std.testing.expectEqual(null, registry.hostOf(@splat(5), 4 + lease_seconds));
     ad.rendezvous = false;
-    ad.revision = 2;
+    ad.revision = 4;
     const stopped = try registry.advertise(.renew, again, source, ad, "{}", @splat(6), 5);
     try std.testing.expectEqual(null, stopped.rendezvous);
     try std.testing.expectEqual(again, stopped.ended.?);

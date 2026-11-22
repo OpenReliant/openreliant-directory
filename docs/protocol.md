@@ -216,6 +216,10 @@ registers, and when the host stops asking.
 | `POST /v1/rendezvous/send` | `id` and a `signal` | 204 |
 | `POST /v1/rendezvous/poll` | A player: `id`. A host: an empty object | A player: `signals`. A host: `exchanges`, each with its `id` and `signals` |
 
+A host that also sends `"unlisted": true` is left out of every list. Players then reach it only
+with its key and session, which the host hands them as an invite. The session is new each time
+a game is hosted, so an invite ends with the game. An unlisted game has to take rendezvous.
+
 A player sends no credentials: the exchange's `id`, 32 hex digits from the offer's answer, is its
 secret. A host sends its token in `X-Directory-Rendezvous`. A signal is base64 of up to 2880
 bytes. A poll returns each waiting signal once, oldest first, up to about 16 KiB an answer, and

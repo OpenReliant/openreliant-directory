@@ -53,6 +53,9 @@ pub const Advertisement = struct {
     /// Whether players reach the host through this directory's rendezvous, for a host behind a
     /// router with no forwarded port.
     rendezvous: bool = false,
+    /// Whether the game is left out of the list. Players then reach it only with its key and
+    /// session, which an invite carries, so it has to take rendezvous.
+    unlisted: bool = false,
 
     pub fn valid(ad: Advertisement) bool {
         return labelValid(ad.game) and ad.revision != 0 and textValid(ad.name, 96, false) and
@@ -61,7 +64,8 @@ pub const Advertisement = struct {
             (ad.scenario == null or labelValid(ad.scenario.?)) and ad.capacity != 0 and
             ad.players <= ad.capacity and ad.protocol != 0 and ad.port != 0 and
             textValid(ad.release, 64, false) and textValid(ad.content, 256, true) and
-            (ad.address == null or advertisedAddress(ad.address.?) != null);
+            (ad.address == null or advertisedAddress(ad.address.?) != null) and
+            (!ad.unlisted or ad.rendezvous);
     }
 };
 
