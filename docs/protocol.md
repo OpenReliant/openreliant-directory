@@ -118,8 +118,13 @@ Send POST requests with an exact `Content-Length`. The service accepts up to 4 K
 and 8 KiB of headers. All keys, session IDs, challenges and signatures use lowercase hex
 without punctuation. The host public key is a 32-byte Ed25519 key. The session ID is 16 bytes
 selected by the host and scoped to this hosted session. The directory supplies a 32-byte
-challenge tied to that host, session, operation, directory instance and observed IP address.
-A challenge expires after 30 seconds and is used once.
+challenge tied to that host, session, operation, directory instance and observed source.
+A challenge expires after 30 seconds and is used once. Use it straight away: when every
+challenge slot is taken, the one that has waited longest is dropped to make room.
+
+A source is an IPv4 address or an IPv6 /64, because an IPv6 host can use any address of its
+/64. The request allowance, the pending challenges and the publisher quota all count by source.
+A source may send 120 requests a minute, hold 8 pending challenges and publish 16 listings.
 
 Send the key, session, challenge and signature as `X-Directory-Key`,
 `X-Directory-Session`, `X-Directory-Challenge` and `X-Directory-Signature`.
@@ -178,6 +183,7 @@ Browse pages contain at most 16 listings. Treat the cursor as opaque and start f
 refresh. Concurrent updates can change later pages. Errors use 400 for invalid input, 401
 for a missing or invalid proof, 403 for policy, 404 for a missing lease or route, 405 for
 method, 409 for stale or conflicting revisions, 413 for a large body, 429 for quota and
-503 for full service state. Request a fresh challenge when retrying a signed operation.
+503 when every listing slot is taken. A flood of new sources or unused challenges never
+causes a 503: the oldest entry makes room. Request a fresh challenge when retrying a signed operation.
 The service can advertise an operator-configured STUN or TURN endpoint and issue credentials
 to authorised TURN hosts. Rendezvous and game-side credential distribution are not implemented.
