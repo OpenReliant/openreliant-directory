@@ -167,9 +167,13 @@ Use a namespaced game ID, for example `org.openreliant.starlancer`.
 Names are limited to 96 UTF-8 bytes, descriptions to 512, release names to 64 and content
 summaries to 256. Addresses use the observed public IP and the signed UDP port. A host
 behind a provider with separate inbound and outbound addresses may set `address` to a
-public IP literal in its signed advertisement. The directory does not verify that address.
-Clients must verify the advertised host key when connecting. Publisher quotas continue
-to use the observed source address.
+public IP literal in its signed advertisement. The directory does not verify that address,
+and players' games ping every listed address. So a host that publishes from a public address
+may only name another one when the operator has allowed its key with `--address-host`.
+Otherwise the directory answers 403. Naming the address it publishes from is always allowed,
+and a host that publishes from a private address has to name a public one
+(`--allow-private-publishers`). Clients must verify the advertised host key when connecting.
+Publisher quotas continue to use the observed source address.
 
 A listing contains `key`, `session`, `address`, `reachability`,
 `expires_in_seconds` and the original `advertisement`. Reachability is `unverified`.
@@ -184,6 +188,9 @@ refresh. Concurrent updates can change later pages. Errors use 400 for invalid i
 for a missing or invalid proof, 403 for policy, 404 for a missing lease or route, 405 for
 method, 409 for stale or conflicting revisions, 413 for a large body, 429 for quota and
 503 when every listing slot is taken. A flood of new sources or unused challenges never
-causes a 503: the oldest entry makes room. Request a fresh challenge when retrying a signed operation.
+causes a 503: the oldest entry makes room. When every listing slot is taken, the source with
+the most listings gives up the one that expires first to a source that would still have
+fewer afterwards. A host that loses a listing this way gets 404 on its next renewal and
+registers again. Request a fresh challenge when retrying a signed operation.
 The service can advertise an operator-configured STUN or TURN endpoint and issue credentials
 to authorised TURN hosts. Rendezvous and game-side credential distribution are not implemented.

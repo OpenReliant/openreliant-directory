@@ -11,7 +11,7 @@ const usage =
     \\                             [--allow-game ID] [--allow-host PUBLIC-KEY]
     \\                             [--no-update-check]
     \\                             [--max-connections COUNT]
-    \\                             [--allow-private-publishers]
+    \\                             [--allow-private-publishers] [--address-host PUBLIC-KEY]
     \\                             [--stun ENDPOINT] [--turn ENDPOINT]
     \\                             [--turn-host PUBLIC-KEY] [--turn-secret-file PATH]
     \\       openreliant-directory --version
@@ -19,6 +19,8 @@ const usage =
     \\The default listener is 127.0.0.1:8080. Put an HTTPS proxy in front of a public instance.
     \\With --trust-proxy, the loopback proxy must replace X-Forwarded-For with the original IP.
     \\Omit --allow-game and --allow-host to accept any game and any verified host key.
+    \\A host is listed at the address it publishes from. Give --address-host for each host
+    \\that may name another public address in its advertisement.
     \\Use --no-update-check to skip checking for releases on GitHub at startup.
     \\
 ;
@@ -40,6 +42,10 @@ pub fn main(init: std.process.Init) !u8 {
     const registry = try init.gpa.create(Registry);
     defer init.gpa.destroy(registry);
     registry.* = .{ .policy = settings.policy };
+    registry.policy.address_hosts = settings.address_hosts[0..settings.address_host_count];
+    const connections = try init.gpa.alloc(?std.Io.net.IpAddress, settings.max_connections);
+    defer init.gpa.free(connections);
+    @memset(connections, null);
     std.log.info("OpenReliant Directory {s}", .{version.string});
     var update_check: std.Io.Group = .init;
     defer update_check.cancel(init.io);
@@ -54,7 +60,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     const turn_secret = if (secret) |bytes| std.mem.trim(u8, bytes, "\r\n") else null;
     if (turn_secret) |bytes| if (bytes.len < 32) return error.ShortTurnSecret;
-    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .allow_private_publishers = settings.allow_private_publishers, .stun = settings.stun, .turn = settings.turn, .turn_hosts = settings.turn_hosts[0..settings.turn_host_count], .turn_secret = turn_secret, .registry = registry, .max_connections = settings.max_connections };
+    var server: Server = .{ .io = init.io, .trust_proxy = settings.trust_proxy, .allow_private_publishers = settings.allow_private_publishers, .stun = settings.stun, .turn = settings.turn, .turn_hosts = settings.turn_hosts[0..settings.turn_host_count], .turn_secret = turn_secret, .registry = registry, .connections = connections };
     try server.serve(settings.bind);
     return 0;
 }
@@ -69,6 +75,8 @@ const Settings = struct {
     turn_hosts: [64]protocol.Key = undefined,
     turn_host_count: usize = 0,
     turn_secret_file: ?[]const u8 = null,
+    address_hosts: [64]protocol.Key = undefined,
+    address_host_count: usize = 0,
     max_connections: usize = Server.default_connections,
     policy: Registry.Policy = .{},
 
@@ -101,6 +109,10 @@ const Settings = struct {
                 if (settings.turn_host_count == settings.turn_hosts.len) return error.TooManyTurnHosts;
                 settings.turn_hosts[settings.turn_host_count] = try protocol.decodeHex(protocol.public_key_size, value);
                 settings.turn_host_count += 1;
+            } else if (std.mem.eql(u8, argument, "--address-host")) {
+                if (settings.address_host_count == settings.address_hosts.len) return error.TooManyAddressHosts;
+                settings.address_hosts[settings.address_host_count] = try protocol.decodeHex(protocol.public_key_size, value);
+                settings.address_host_count += 1;
             } else if (std.mem.eql(u8, argument, "--turn-secret-file")) {
                 settings.turn_secret_file = value;
             } else if (std.mem.eql(u8, argument, "--max-connections")) {
@@ -126,6 +138,7 @@ const Settings = struct {
 test {
     std.testing.refAllDecls(protocol);
     std.testing.refAllDecls(Registry);
+    _ = Server;
     _ = updates;
     _ = version;
 }

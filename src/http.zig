@@ -20,9 +20,10 @@ turn: ?[]const u8 = null,
 turn_hosts: []const protocol.Key = &.{},
 turn_secret: ?[]const u8 = null,
 registry: *Registry,
-max_connections: usize = default_connections,
+/// The address of each open connection, one place for each connection the service allows.
+connections: []?net.IpAddress,
+connections_mutex: Io.Mutex = .init,
 mutex: Io.Mutex = .init,
-active: std.atomic.Value(usize) = .init(0),
 
 pub fn serve(server: *Server, address: net.IpAddress) !void {
     var listener = try address.listen(server.io, .{ .reuse_address = true, .kernel_backlog = 32 });
@@ -40,16 +41,70 @@ pub fn serve(server: *Server, address: net.IpAddress) !void {
                 continue;
             },
         };
-        if (server.active.fetchAdd(1, .monotonic) < server.max_connections) {
-            if (workers.concurrent(server.io, serveConnection, .{ server, stream })) |_| continue else |_| {}
+        if (server.claim(stream.socket.address)) |place| {
+            if (workers.concurrent(server.io, serveConnection, .{ server, stream, place })) |_| continue else |_| {}
+            server.release(place);
         }
-        _ = server.active.fetchSub(1, .monotonic);
         stream.close(server.io);
     }
 }
 
-fn serveConnection(server: *Server, stream: net.Stream) void {
-    defer _ = server.active.fetchSub(1, .monotonic);
+/// How many of the connections one source may hold when the service faces the internet itself.
+/// A connection that sends nothing holds its place for the whole request deadline, so without
+/// this a single address could keep everyone else out.
+fn sourceShare(server: *const Server) usize {
+    return @max(1, server.connections.len / 4);
+}
+
+/// Takes a place for a connection, or null when none is free or its source holds its share.
+/// Behind a proxy every connection comes from the proxy, which applies its own limits.
+fn claim(server: *Server, remote: net.IpAddress) ?*?net.IpAddress {
+    var address = remote;
+    address.setPort(0);
+    server.connections_mutex.lockUncancelable(server.io);
+    defer server.connections_mutex.unlock(server.io);
+    var free: ?*?net.IpAddress = null;
+    var held: usize = 0;
+    for (server.connections) |*place| {
+        if (place.*) |open| {
+            if (protocol.sameSource(open, address)) held += 1;
+        } else if (free == null) {
+            free = place;
+        }
+    }
+    if (!server.trust_proxy and held >= server.sourceShare()) return null;
+    const place = free orelse return null;
+    place.* = address;
+    return place;
+}
+
+fn release(server: *Server, place: *?net.IpAddress) void {
+    server.connections_mutex.lockUncancelable(server.io);
+    defer server.connections_mutex.unlock(server.io);
+    place.* = null;
+}
+
+test "one source holds a share of the connections, except behind a proxy" {
+    var places: [8]?net.IpAddress = @splat(null);
+    var registry: Registry = undefined;
+    var server: Server = .{ .io = std.testing.io, .trust_proxy = false, .registry = &registry, .connections = &places };
+    const one = try net.IpAddress.parse("8.8.8.8", 4000);
+    const first = server.claim(one).?;
+    _ = server.claim(try net.IpAddress.parse("8.8.8.8", 4001)).?;
+    try std.testing.expectEqual(null, server.claim(one));
+    _ = server.claim(try net.IpAddress.parse("9.9.9.9", 4000)).?;
+    server.release(first);
+    _ = server.claim(one).?;
+
+    places = @splat(null);
+    server.trust_proxy = true;
+    const proxy = try net.IpAddress.parse("127.0.0.1", 4000);
+    for (0..places.len) |_| _ = server.claim(proxy).?;
+    try std.testing.expectEqual(null, server.claim(proxy));
+}
+
+fn serveConnection(server: *Server, stream: net.Stream, place: *?net.IpAddress) void {
+    defer server.release(place);
     defer stream.close(server.io);
     const Event = union(enum) { request: void, deadline: Io.Cancelable!void };
     var events: [2]Event = undefined;
@@ -174,10 +229,12 @@ fn dispatch(server: *Server, request: *Request, source: net.IpAddress, now: i64)
         if (protocol.publicAddress(source) == null and ad.address == null) return error.Forbidden;
         break :ad ad;
     };
+    // The signature is checked before the registry's lock is taken.
+    const verified = proof.?.verified(op, body) orelse return error.Unauthorised;
     {
         try server.mutex.lock(server.io);
         defer server.mutex.unlock(server.io);
-        try server.registry.authorise(proof.?, public, op, body, received_at);
+        try server.registry.authorise(verified, public, received_at);
         if (advertisement) |ad| {
             try server.registry.advertise(op, proof.?.identity, public, ad, body, received_at);
         } else server.registry.withdraw(proof.?.identity);
@@ -199,10 +256,11 @@ fn credentials(server: *Server, request: *Request, proof: protocol.Proof, source
     for (server.turn_hosts) |allowed| {
         if (std.mem.eql(u8, &allowed, &key)) break;
     } else return error.Forbidden;
+    const verified = proof.verified(.credentials, body) orelse return error.Unauthorised;
     {
         try server.mutex.lock(server.io);
         defer server.mutex.unlock(server.io);
-        try server.registry.authorise(proof, source, .credentials, body, now);
+        try server.registry.authorise(verified, source, now);
     }
     const expires = Io.Clock.real.now(server.io).toSeconds() + 600;
     var username_buffer: [96]u8 = undefined;
