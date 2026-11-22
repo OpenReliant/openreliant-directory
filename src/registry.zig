@@ -49,6 +49,11 @@ const Listing = struct {
     source: net.IpAddress,
     revision: u64,
     expires: i64,
+    /// The secret the host polls and sends its rendezvous signals with, for a listing that
+    /// asked for rendezvous. It lasts as long as the host's session is listed.
+    rendezvous: ?Token = null,
+    /// Left out of what `browse` returns.
+    unlisted: bool = false,
     game_id: [protocol.max_game_id]u8 = undefined,
     game_len: usize = 0,
     body: [protocol.max_body]u8 = undefined,
@@ -89,22 +94,41 @@ const Rate = struct {
 policy: Policy = .{},
 pending: [challenge_capacity]?Pending = @splat(null),
 listings: [listing_capacity]?Listing = @splat(null),
-rates: [512]?Rate = @splat(null),
+rates: std.EnumArray(Budget, [512]?Rate) = .initFill(@splat(null)),
+
+/// What a request counts against. Rendezvous is polled several times a second while a player
+/// joins, so it has an allowance of its own and can't use up the one browsing and publishing share.
+pub const Budget = enum {
+    general,
+    signalling,
+    /// Offers that open a rendezvous exchange, which cost a host work each.
+    offers,
+
+    /// Requests a source may make in a minute.
+    fn allowance(budget: Budget) u16 {
+        return switch (budget) {
+            .general => 120,
+            .signalling => 600,
+            .offers => 12,
+        };
+    }
+};
 
 pub const Error = error{ Busy, RateLimited, Unauthorised, Forbidden, Missing, Stale, Conflict };
 
 /// At most 120 requests per source per minute. When the table is full, the source whose minute
 /// started first makes room, so a flood of new sources never turns other visitors away.
-pub fn admit(registry: *Registry, address: net.IpAddress, now: i64) Error!void {
+pub fn admit(registry: *Registry, address: net.IpAddress, budget: Budget, now: i64) Error!void {
+    const rates = registry.rates.getPtr(budget);
     const source = protocol.sourceOf(address);
     var free: ?*?Rate = null;
     var oldest: ?*?Rate = null;
-    for (&registry.rates) |*entry| {
+    for (rates) |*entry| {
         if (entry.*) |*rate| {
             if (rate.until > now) {
                 if (oldest == null or rate.until < oldest.?.*.?.until) oldest = entry;
                 if (!rate.address.eql(&source)) continue;
-                if (rate.requests >= 120) return error.RateLimited;
+                if (rate.requests >= budget.allowance()) return error.RateLimited;
                 rate.requests += 1;
                 return;
             }
@@ -121,19 +145,19 @@ test "a full rate table makes room for a new source" {
     defer std.testing.allocator.destroy(registry);
     registry.* = .{};
     const first = try net.IpAddress.parse("8.8.8.8", 0);
-    try registry.admit(first, 0);
-    for (0..registry.rates.len) |index| {
+    try registry.admit(first, .general, 0);
+    for (0..registry.rates.get(.general).len) |index| {
         var address = try net.IpAddress.parse("2606:4700::", 0);
         std.mem.writeInt(u16, address.ip6.bytes[4..6], @intCast(index), .big);
-        try registry.admit(address, 1);
+        try registry.admit(address, .general, 1);
     }
     // The first source gave up its place and starts a new minute.
-    try registry.admit(first, 2);
-    try registry.admit(try net.IpAddress.parse("9.9.9.9", 0), 2);
+    try registry.admit(first, .general, 2);
+    try registry.admit(try net.IpAddress.parse("9.9.9.9", 0), .general, 2);
     // An empty first place is taken before any live entry is replaced.
-    registry.rates[0] = null;
-    try registry.admit(try net.IpAddress.parse("1.1.1.1", 0), 2);
-    try std.testing.expect(registry.rates[0] != null);
+    registry.rates.getPtr(.general)[0] = null;
+    try registry.admit(try net.IpAddress.parse("1.1.1.1", 0), .general, 2);
+    try std.testing.expect(registry.rates.get(.general)[0] != null);
 }
 
 test "IPv6 addresses in one subnet share the request allowance" {
@@ -143,10 +167,10 @@ test "IPv6 addresses in one subnet share the request allowance" {
     for (0..120) |index| {
         var address = try net.IpAddress.parse("2606:4700:abcd:1234::", 0);
         address.ip6.bytes[15] = @intCast(index);
-        try registry.admit(address, 0);
+        try registry.admit(address, .general, 0);
     }
-    try std.testing.expectError(error.RateLimited, registry.admit(try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), 0));
-    try registry.admit(try net.IpAddress.parse("2606:4700:abcd:1235::1", 0), 0);
+    try std.testing.expectError(error.RateLimited, registry.admit(try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), .general, 0));
+    try registry.admit(try net.IpAddress.parse("2606:4700:abcd:1235::1", 0), .general, 0);
 }
 
 pub fn challenge(registry: *Registry, who: Identity, source: net.IpAddress, operation: Operation, token: Token, now: i64) Error!void {
@@ -192,8 +216,9 @@ pub fn advertise(
     source: net.IpAddress,
     ad: protocol.Advertisement,
     body: []const u8,
+    fresh: Token,
     now: i64,
-) Error!void {
+) Error!Lease {
     if (!registry.policy.allows(who.key, ad.game.id)) return error.Forbidden;
     var first_free: ?*?Listing = null;
     var previous: ?*Listing = null;
@@ -226,22 +251,58 @@ pub fn advertise(
     if (previous) |listing| {
         if (!listing.identity.eql(who)) {
             if (operation == .renew) return error.Missing;
+            const ended = listing.identity;
             put(listing, who, source, address, ad, body, now);
-            return;
+            listing.rendezvous = if (ad.rendezvous) fresh else null;
+            return .{ .rendezvous = listing.rendezvous, .ended = ended };
         }
         if (!std.mem.eql(u8, listing.game_id[0..listing.game_len], ad.game.id)) return error.Conflict;
         if (ad.revision < listing.revision) return error.Stale;
         if (ad.revision == listing.revision) {
             if (!source.eql(&listing.source) or !address.eql(&listing.address) or !std.mem.eql(u8, body, listing.payload())) return error.Conflict;
             listing.expires = now + lease_seconds;
-        } else put(listing, who, source, address, ad, body, now);
-        return;
+            return .{ .rendezvous = listing.rendezvous };
+        }
+        // The session keeps its token through its updates, and loses it if it stops asking.
+        const kept = listing.rendezvous;
+        put(listing, who, source, address, ad, body, now);
+        listing.rendezvous = if (ad.rendezvous) kept orelse fresh else null;
+        return .{ .rendezvous = listing.rendezvous, .ended = if (kept != null and !ad.rendezvous) who else null };
     }
 
     if (operation == .renew) return error.Missing;
     const slot = first_free orelse registry.crowded(source, source_count, now) orelse return error.Busy;
     slot.* = .{ .identity = who, .address = address, .source = source, .revision = ad.revision, .expires = now + lease_seconds };
     put(&slot.*.?, who, source, address, ad, body, now);
+    slot.*.?.rendezvous = if (ad.rendezvous) fresh else null;
+    return .{ .rendezvous = slot.*.?.rendezvous };
+}
+
+/// What a registration gives the host: its rendezvous token, where its advertisement asked for
+/// rendezvous, and the session whose rendezvous this one ended, if any.
+pub const Lease = struct {
+    rendezvous: ?Token = null,
+    ended: ?Identity = null,
+};
+
+/// Whether `who` is listed and takes rendezvous.
+pub fn takesRendezvous(registry: *const Registry, who: Identity, now: i64) bool {
+    for (&registry.listings) |*entry| {
+        const listing = if (entry.*) |*item| item else continue;
+        if (listing.expires > now and listing.identity.eql(who)) return listing.rendezvous != null;
+    }
+    return false;
+}
+
+/// The listed host that holds the rendezvous token `token`.
+pub fn hostOf(registry: *const Registry, token: Token, now: i64) ?Identity {
+    for (&registry.listings) |*entry| {
+        const listing = if (entry.*) |*item| item else continue;
+        if (listing.expires <= now) continue;
+        const held = listing.rendezvous orelse continue;
+        if (std.crypto.timing_safe.eql(Token, held, token)) return listing.identity;
+    }
+    return null;
 }
 
 /// With every slot taken, the source with the most listings gives one up to a source that would
@@ -271,6 +332,7 @@ fn crowded(registry: *Registry, source: net.IpAddress, source_count: usize, now:
 
 fn put(listing: *Listing, who: Identity, source: net.IpAddress, address: net.IpAddress, ad: protocol.Advertisement, body: []const u8, now: i64) void {
     listing.* = .{ .identity = who, .address = address, .source = source, .revision = ad.revision, .expires = now + lease_seconds };
+    listing.unlisted = ad.unlisted;
     @memcpy(listing.game_id[0..ad.game.id.len], ad.game.id);
     listing.game_len = ad.game.id.len;
     @memcpy(listing.body[0..body.len], body);
@@ -292,7 +354,7 @@ pub fn browse(registry: *const Registry, game: []const u8, cursor: usize, now: i
     var next: ?usize = null;
     for (registry.listings[@min(cursor, listing_capacity)..], @min(cursor, listing_capacity)..) |*entry, index| {
         const listing = if (entry.*) |*item| item else continue;
-        if (listing.expires <= now or !std.mem.eql(u8, game, listing.game_id[0..listing.game_len])) continue;
+        if (listing.expires <= now or listing.unlisted or !std.mem.eql(u8, game, listing.game_id[0..listing.game_len])) continue;
         if (count == page_size) {
             next = index;
             break;
@@ -325,7 +387,7 @@ test "leases expire independently and renewals cannot recreate one" {
         .release = "0.1",
         .port = 27020,
     };
-    try registry.advertise(.register, who, source, ad, "{}", 1);
+    _ = try registry.advertise(.register, who, source, ad, "{}", @splat(0), 1);
     var buffer: [2048]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
     try registry.browse(ad.game.id, 0, 90, &out);
@@ -333,7 +395,7 @@ test "leases expire independently and renewals cannot recreate one" {
     out = .fixed(&buffer);
     try registry.browse(ad.game.id, 0, 91, &out);
     try std.testing.expectEqualStrings("{\"listings\":[],\"next\":null}", out.buffered());
-    try std.testing.expectError(error.Missing, registry.advertise(.renew, who, source, ad, "{}", 91));
+    try std.testing.expectError(error.Missing, registry.advertise(.renew, who, source, ad, "{}", @splat(0), 91));
 }
 
 test "a proof is bound to its directory challenge and operation" {
@@ -410,9 +472,9 @@ test "an IPv6 /64 shares the challenge and listing quotas, and a full challenge 
     for (0..16) |index| {
         var address = try net.IpAddress.parse("2606:4700:abcd:1234::", 0);
         address.ip6.bytes[15] = @intCast(index);
-        try registry.advertise(.register, .{ .key = @splat(@intCast(index)), .session = @splat(1) }, address, ad, "{}", 0);
+        _ = try registry.advertise(.register, .{ .key = @splat(@intCast(index)), .session = @splat(1) }, address, ad, "{}", @splat(0), 0);
     }
-    try std.testing.expectError(error.RateLimited, registry.advertise(.register, .{ .key = @splat(16), .session = @splat(1) }, try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), ad, "{}", 0));
+    try std.testing.expectError(error.RateLimited, registry.advertise(.register, .{ .key = @splat(16), .session = @splat(1) }, try net.IpAddress.parse("2606:4700:abcd:1234::ffff", 0), ad, "{}", @splat(0), 0));
 }
 
 test "an advertised address keeps publisher quotas tied to its observed source" {
@@ -436,10 +498,10 @@ test "an advertised address keeps publisher quotas tied to its observed source" 
     };
     for (0..16) |index| {
         const who: Identity = .{ .key = @splat(@intCast(index)), .session = @splat(1) };
-        try registry.advertise(.register, who, source, ad, "{}", 0);
+        _ = try registry.advertise(.register, who, source, ad, "{}", @splat(0), 0);
     }
     const extra: Identity = .{ .key = @splat(16), .session = @splat(1) };
-    try std.testing.expectError(error.RateLimited, registry.advertise(.register, extra, source, ad, "{}", 0));
+    try std.testing.expectError(error.RateLimited, registry.advertise(.register, extra, source, ad, "{}", @splat(0), 0));
     var buffer: [8192]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
     try registry.browse(ad.game.id, 0, 1, &out);
@@ -468,11 +530,11 @@ test "a host on a public address names another one only with the operator's leav
         .port = 27020,
         .address = "1.1.1.1",
     };
-    try std.testing.expectError(error.Forbidden, registry.advertise(.register, .{ .key = @splat(4), .session = @splat(1) }, source, ad, "{}", 0));
-    try registry.advertise(.register, .{ .key = trusted, .session = @splat(1) }, source, ad, "{}", 0);
+    try std.testing.expectError(error.Forbidden, registry.advertise(.register, .{ .key = @splat(4), .session = @splat(1) }, source, ad, "{}", @splat(0), 0));
+    _ = try registry.advertise(.register, .{ .key = trusted, .session = @splat(1) }, source, ad, "{}", @splat(0), 0);
     // Naming the address it publishes from needs no leave.
     ad.address = "8.8.8.8";
-    try registry.advertise(.register, .{ .key = @splat(4), .session = @splat(1) }, source, ad, "{}", 0);
+    _ = try registry.advertise(.register, .{ .key = @splat(4), .session = @splat(1) }, source, ad, "{}", @splat(0), 0);
 }
 
 test "a full listing table takes from the source with the most, and leaves single listings alone" {
@@ -502,19 +564,93 @@ test "a full listing table takes from the source with the most, and leaves singl
         }
     };
     // One listing a source: nobody gives one up.
-    for (0..listing_capacity) |index| try registry.advertise(.register, Fill.identity(index), Fill.source(index), ad, "{}", 0);
+    for (0..listing_capacity) |index| _ = try registry.advertise(.register, Fill.identity(index), Fill.source(index), ad, "{}", @splat(0), 0);
     const late = try net.IpAddress.parse("9.9.9.9", 0);
-    try std.testing.expectError(error.Busy, registry.advertise(.register, Fill.identity(1000), late, ad, "{}", 1));
+    try std.testing.expectError(error.Busy, registry.advertise(.register, Fill.identity(1000), late, ad, "{}", @splat(0), 1));
 
     // Sixteen sources with sixteen listings each: a newcomer takes one of theirs.
     registry.listings = @splat(null);
-    for (0..listing_capacity) |index| try registry.advertise(.register, Fill.identity(index), Fill.source(index / 16), ad, "{}", 0);
-    try registry.advertise(.register, Fill.identity(1000), late, ad, "{}", 1);
+    for (0..listing_capacity) |index| _ = try registry.advertise(.register, Fill.identity(index), Fill.source(index / 16), ad, "{}", @splat(0), 0);
+    _ = try registry.advertise(.register, Fill.identity(1000), late, ad, "{}", @splat(0), 1);
     var held: usize = 0;
     for (registry.listings) |entry| {
         if (entry.?.source.eql(&late)) held += 1;
     }
     try std.testing.expectEqual(1, held);
     // The crowding sources can't take from each other.
-    try std.testing.expectError(error.RateLimited, registry.advertise(.register, Fill.identity(1001), Fill.source(3), ad, "{}", 1));
+    try std.testing.expectError(error.RateLimited, registry.advertise(.register, Fill.identity(1001), Fill.source(3), ad, "{}", @splat(0), 1));
+}
+
+test "signalling has an allowance of its own" {
+    const registry = try std.testing.allocator.create(Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.* = .{};
+    const source = try net.IpAddress.parse("8.8.8.8", 0);
+    for (0..Budget.general.allowance()) |_| try registry.admit(source, .general, 0);
+    try std.testing.expectError(error.RateLimited, registry.admit(source, .general, 0));
+    for (0..Budget.signalling.allowance()) |_| try registry.admit(source, .signalling, 0);
+    try std.testing.expectError(error.RateLimited, registry.admit(source, .signalling, 0));
+}
+
+test "a listing that asks for rendezvous holds a token for as long as its session is listed" {
+    const registry = try std.testing.allocator.create(Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.* = .{};
+    const source = try net.IpAddress.parse("8.8.8.8", 0);
+    const who: Identity = .{ .key = @splat(3), .session = @splat(7) };
+    var ad: protocol.Advertisement = .{
+        .game = .{ .id = "org.example.game", .name = "Game" },
+        .revision = 1,
+        .name = "Server",
+        .hosting = .player_hosted,
+        .players = 0,
+        .capacity = 8,
+        .accepting = true,
+        .protocol = 1,
+        .release = "1.0.0",
+        .port = 27020,
+    };
+    // Without the field there is no token.
+    try std.testing.expectEqual(Lease{}, try registry.advertise(.register, who, source, ad, "{}", @splat(1), 0));
+    try std.testing.expect(!registry.takesRendezvous(who, 0));
+    // Asking for it gives one, which the session keeps through renewals and updates.
+    ad.rendezvous = true;
+    ad.revision = 2;
+    const first = try registry.advertise(.register, who, source, ad, "{}", @splat(2), 1);
+    try std.testing.expectEqual(@as(Token, @splat(2)), first.rendezvous.?);
+    try std.testing.expect(registry.takesRendezvous(who, 1));
+    try std.testing.expectEqual(who, registry.hostOf(@splat(2), 1).?);
+    try std.testing.expectEqual(null, registry.hostOf(@splat(9), 1));
+    try std.testing.expectEqual(first, try registry.advertise(.renew, who, source, ad, "{}", @splat(3), 2));
+    ad.revision = 3;
+    try std.testing.expectEqual(first, try registry.advertise(.renew, who, source, ad, "{ }", @splat(4), 3));
+    // A new session of the same host gets a new token and ends the old session's rendezvous.
+    const again: Identity = .{ .key = who.key, .session = @splat(8) };
+    ad.revision = 1;
+    const second = try registry.advertise(.register, again, source, ad, "{}", @splat(5), 4);
+    try std.testing.expectEqual(@as(Token, @splat(5)), second.rendezvous.?);
+    try std.testing.expectEqual(who, second.ended.?);
+    try std.testing.expectEqual(null, registry.hostOf(@splat(2), 4));
+    // An unlisted game takes rendezvous without appearing in the list.
+    var hidden = ad;
+    hidden.unlisted = true;
+    hidden.revision = 2;
+    _ = try registry.advertise(.renew, again, source, hidden, "{}", @splat(7), 4);
+    var listed: [512]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&listed);
+    try registry.browse(ad.game.id, 0, 4, &out);
+    try std.testing.expectEqualStrings("{\"listings\":[],\"next\":null}", out.buffered());
+    try std.testing.expect(registry.takesRendezvous(again, 4));
+    hidden.rendezvous = false;
+    try std.testing.expect(!hidden.valid());
+    ad.revision = 3;
+    _ = try registry.advertise(.renew, again, source, ad, "{}", @splat(8), 4);
+    ad.revision = 1;
+    // The token goes with the lease, and when the host stops asking.
+    try std.testing.expectEqual(null, registry.hostOf(@splat(5), 4 + lease_seconds));
+    ad.rendezvous = false;
+    ad.revision = 4;
+    const stopped = try registry.advertise(.renew, again, source, ad, "{}", @splat(6), 5);
+    try std.testing.expectEqual(null, stopped.rendezvous);
+    try std.testing.expectEqual(again, stopped.ended.?);
 }
